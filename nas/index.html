@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>地籍共作平台</title>
+<!--CSS-->
+</head>
+<body>
+<header id="top">
+  <div class="brand">🗺 地籍共作平台</div>
+  <nav>
+    <button class="big up" data-panel="upload">📤 上傳外業資料</button>
+    <button class="big find" data-panel="search">🔍 查詢</button>
+    <button class="big list" data-panel="recent">🕘 誰上傳了什麼</button>
+    <button class="small" data-panel="admin" title="管理">⚙</button>
+  </nav>
+</header>
+
+<main>
+  <aside id="side" class="hidden">
+    <button id="sideClose" class="close" title="收起來">✕</button>
+
+    <!-- 上傳 -->
+    <section id="p-upload" class="panel">
+      <h2>📤 上傳外業資料</h2>
+      <div class="step" id="u1">
+        <div class="num">1</div>
+        <div class="body">
+          <label>你的名字</label>
+          <input id="who" placeholder="例如：王小明" autocomplete="name">
+        </div>
+      </div>
+      <div class="step" id="u2">
+        <div class="num">2</div>
+        <div class="body">
+          <label>把重測系統的資料夾（例如 KC1114）或 zip 拖到下面框框</label>
+          <div id="drop">
+            <div class="dropicon">📂</div>
+            <div>拖進來放開就好</div>
+            <div class="or">或</div>
+            <button id="pickDir" class="pick">選資料夾</button>
+            <button id="pickFile" class="pick">選檔案 / zip</button>
+            <input type="file" id="dirInput" webkitdirectory multiple hidden>
+            <input type="file" id="fileInput" multiple hidden>
+          </div>
+          <div id="picked"></div>
+          <input id="note" placeholder="備註（可不填），例如：113.04.16 協助指界">
+        </div>
+      </div>
+      <div class="step hidden" id="u3">
+        <div class="num">3</div>
+        <div class="body">
+          <label>系統看到的內容</label>
+          <div id="preview"></div>
+          <div class="row">
+            <button id="doUpload" class="go">✅ 沒問題，上傳！</button>
+            <button id="cancelUpload" class="ghost">重來</button>
+          </div>
+        </div>
+      </div>
+      <details class="help">
+        <summary>要放哪些檔案？</summary>
+        <p>整個資料夾丟進來就好，系統會自己挑：</p>
+        <ul>
+          <li><b>KCxxxx.D20</b>：補點（Q 開頭）</li>
+          <li><b>KCxxxx.D14</b>：參考點（編碼不是 00 的點）</li>
+          <li><b>KCxxxx.L02</b>、儀器 <b>.CSV</b>：這次用到的圖根點（會跟圖根點檔比對）</li>
+          <li><b>.B90</b>：協助指界計算（測站 → 補點的連線）</li>
+        </ul>
+        <p>同一個人、同一段再上傳一次，新的會蓋掉舊的（舊的紀錄還在「誰上傳了什麼」）。</p>
+      </details>
+    </section>
+
+    <!-- 查詢 -->
+    <section id="p-search" class="panel">
+      <h2>🔍 查詢</h2>
+      <div class="searchbox">
+        <input id="q" placeholder="地號、點名、或測量員名字" autocomplete="off">
+        <button id="qGo" class="go">查</button>
+      </div>
+      <div class="hint">例如：<a data-q="123-4">123-4</a>、<a data-q="1114 123">1114 123</a>（段 地號）、<a data-q="QW1">QW1</a>、<a data-q="BHC339">BHC339</a></div>
+      <div id="results"></div>
+    </section>
+
+    <!-- 最近上傳 -->
+    <section id="p-recent" class="panel">
+      <h2>🕘 誰上傳了什麼</h2>
+      <div class="row">
+        <select id="whoFilter"><option value="">全部的人</option></select>
+        <button class="ghost" data-act="/api/export/field.csv">⬇ 下載全部補點/參考點</button>
+      </div>
+      <div id="batches"></div>
+    </section>
+
+    <!-- 管理 -->
+    <section id="p-admin" class="panel">
+      <h2>⚙ 管理</h2>
+      <div class="card"><h3>共用資料夾</h3><div id="folderName" class="small"></div><button id="switchFolder" class="ghost">換資料夾</button></div>
+      <div id="baseInfo" class="card"></div>
+      <div class="card">
+        <h3>更新數值地籍圖</h3>
+        <p class="small">選「數值」資料夾或它的 zip，會自動判斷 67/97、整理圖根點，存進共用資料夾（大約 1 分鐘）。大家下次打開就看得到。</p>
+        <button id="basePickDir" class="pick">選資料夾</button>
+        <button id="basePickFile" class="pick">選 zip</button>
+        <input type="file" id="baseDir" webkitdirectory multiple hidden>
+        <input type="file" id="baseFile" accept=".zip" multiple hidden>
+        <button id="baseRebuild" class="ghost">重新整理</button>
+      </div>
+      <div class="card">
+        <h3>坐標系統（全部換成 TWD97 顯示）</h3>
+        <div id="datumInfo"></div>
+        <label>哪些段是 TWD67（一行一個或用逗號分開）</label>
+        <textarea id="sec67" rows="4"></textarea>
+        <div class="row">
+          <button id="save67" class="go">儲存並重新換算</button>
+          <button id="auto67" class="ghost">改回自動判斷</button>
+        </div>
+        <label>已廢掉的段（不顯示，一行一個或用逗號分開）</label>
+        <textarea id="secAbolished" rows="2"></textarea>
+        <button id="saveAbolished" class="ghost">儲存廢段</button>
+        <details><summary>每一段的判斷結果</summary><div id="datumTable"></div></details>
+      </div>
+      <div class="card">
+        <h3>設定</h3>
+        <label>坐標差多少算「不符」（公分）</label>
+        <input id="tol" type="number" step="0.5" min="0.5">
+        <label>段名（一行一個，例如 KC1114=水尾段）</label>
+        <textarea id="secNames" rows="5"></textarea>
+        <div class="row">
+          <button id="saveCfg" class="go">儲存設定</button>
+          <button id="pickXlsx" class="ghost">從 Excel 段名表匯入</button>
+          <input type="file" id="xlsxInput" accept=".xlsx" hidden>
+        </div>
+      </div>
+      <div class="card">
+        <h3>圖根點檔（.CTL）整理結果</h3>
+        <div id="ctlSummary"></div>
+        <div class="row">
+          <select id="issueType">
+            <option value="">全部問題</option>
+            <option value="samename">同名不同點</option>
+            <option value="spread">各段坐標不一致</option>
+            <option value="local">假設坐標</option>
+            <option value="zero">坐標是 0</option>
+            <option value="datum">看不出 67 或 97</option>
+            <option value="bad">看不懂的行</option>
+          </select>
+        </div>
+        <div class="row">
+          <button class="ghost" data-act="/api/export/ctl.zip">⬇ 標準格式 CTL（TWD97）</button>
+          <button class="ghost" data-act="/api/export/controls.csv">⬇ 圖根點清單 CSV</button>
+        </div>
+        <div id="issues"></div>
+      </div>
+    </section>
+  </aside>
+
+  <div id="mapwrap">
+  <div id="map"></div>
+
+  <div id="legend">
+    <div class="lhead">顯示 <button id="legendToggle" class="tiny">－</button></div>
+    <div id="legendBody">
+      <label><input type="checkbox" data-layer="field" checked> <span class="sym tri"></span> 補點</label>
+      <label><input type="checkbox" data-layer="ref" checked> <span class="sym sq"></span> 參考點</label>
+      <label><input type="checkbox" data-layer="ctl" checked> <span class="sym dot"></span> 圖根點</label>
+      <label><input type="checkbox" data-layer="bad" checked> <span class="sym warn">!</span> 坐標不符</label>
+      <label><input type="checkbox" data-layer="links" checked> <span class="sym line"></span> 設站連線</label>
+      <label><input type="checkbox" data-layer="parcel" checked> <span class="sym par"></span> 地籍線</label>
+      <div class="lsep"></div>
+      <select id="baseLayer">
+        <option value="emap">底圖：電子地圖</option>
+        <option value="photo">底圖：航照</option>
+        <option value="none">底圖：不要</option>
+      </select>
+      <select id="onlyWho"><option value="">看全部人的資料</option></select>
+    </div>
+  </div>
+  <button id="locate" title="我在哪裡">📍</button>
+  <div id="zoomHint"></div>
+  </div>
+</main>
+
+<div id="connect" class="hidden"><div id="connectBox">
+  <h2>🗺 地籍共作平台</h2>
+  <div id="connectFirst">
+    <p>第一次使用：按下面按鈕，選 <b>\\Kcland-nas\kc外網共用\二課</b>，瀏覽器問「允許編輯」時按<b>允許</b>。</p>
+    <p class="small">平台的資料會放在裡面的「地籍共作平台資料」資料夾（沒有會自動建立）。大家選同一個資料夾，就看得到彼此的資料。</p>
+  </div>
+  <button id="connectAgain" class="go hidden"></button>
+  <button id="connectNew" class="go">📂 選共用資料夾</button>
+</div></div>
+<div id="toast"></div>
+<div id="busy" class="hidden"><div class="spin"></div><div id="busyText">處理中…</div></div>
+
+<!--JS-->
+</body>
+</html>

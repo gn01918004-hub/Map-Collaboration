@@ -19,7 +19,7 @@ SHEET_67 = ['KC' + s for s in (
     '0367 0370 0375 0376 0377 0378 0379 0380').split()]
 
 # 已廢掉的段：資料還在，但跟現行的段界址點重合，不顯示、不參與判斷
-ABOLISHED = ['KC0326', 'KC0372', 'KC0373', 'KC0374']
+ABOLISHED = ['KC0326', 'KC0371', 'KC0372', 'KC0373', 'KC0374']
 
 # 旁邊都是圖解區（沒有 97 數值段可以算共同點）的 67 段
 NO_NEIGHBOUR_NOTE = '旁邊是圖解區，沒有 97 數值段可以算共同點，用全區參數'
@@ -235,18 +235,30 @@ def build(base_dir, cache_dir, sec67=None, force=False, log=print, abolished=Non
             prior[k].add('TWD67' if s in eff67 else 'TWD97')
     g97 = _grid([c for v in coa97.values() for c in v])
     g67 = _grid([c for s in eff67 for c in ok_pts.get(s, [])])
-    raw_box = {s: (min(p[0] for p in ok_pts[s]), max(p[0] for p in ok_pts[s]), min(p[1] for p in ok_pts[s]), max(p[1] for p in ok_pts[s]))
-               for s in eff67 if ok_pts.get(s)}
+    # 67 的點用「最近的 67 界址點所在段」的轉換參數
+    g67s = _grid([(c[0], c[1], s) for s in eff67 for c in ok_pts.get(s, [])])
+
+    tcache = {}
 
     def transform_for(y, x):
+        if (y, x) in tcache:
+            return tcache[(y, x)]
+        i, j = int(y // 50.0), int(x // 50.0)
         best, bd = None, 1e18
-        for s, b in raw_box.items():
-            dy = max(b[0] - y, 0, y - b[1])
-            dx = max(b[2] - x, 0, x - b[3])
-            d = math.hypot(dy, dx)
-            if d < bd:
-                best, bd = s, d
-        return trans.get(best, glob_t) if best and bd < 1500 else glob_t
+        for r in (6, 30):
+            for di in range(-r, r + 1):
+                for dj in range(-r, r + 1):
+                    for q in g67s.get((i + di, j + dj), ()):
+                        if abs(q[0] - y) >= r * 50 or abs(q[1] - x) >= r * 50:
+                            continue
+                        d = (q[0] - y) ** 2 + (q[1] - x) ** 2
+                        if d < bd or (d == bd and q[2] < best):
+                            best, bd = q[2], d
+            if bd <= (r * 50) ** 2:
+                break
+        t = trans.get(best, glob_t) if best and bd <= 1500 ** 2 else glob_t
+        tcache[(y, x)] = t
+        return t
 
     decided = {}
 
@@ -258,7 +270,7 @@ def build(base_dir, cache_dir, sec67=None, force=False, log=print, abolished=Non
             r = (next(iter(p)), '依所在段')
         else:
             d97 = _nearest(g97, k[1], k[2])
-            d67 = _nearest(g67, k[1], k[2]) if raw_box else 1e18
+            d67 = _nearest(g67, k[1], k[2]) if eff67 else 1e18
             if d67 < 25 and d97 > max(60, 4 * d67):
                 r = ('TWD67', '依位置判斷（離 67 界址點 %.0f m、離 97 界址點 %s）' % (d67, '很遠' if d97 > 1e5 else '%.0f m' % d97))
             elif d97 < 25 and d67 > max(60, 4 * d97):
@@ -268,22 +280,30 @@ def build(base_dir, cache_dir, sec67=None, force=False, log=print, abolished=Non
         decided[k] = r
         return r
 
-    # 判斷不出來的點：看同一份 CTL 前後 15 行已判斷出來的點（CTL 通常是一批一批測的，前後點同一系統）
+    # 判斷不出來的點：看同一份 CTL 前後 15 行（CTL 一批一批測的；抽測準確率約 99%），最多傳 3 輪
+    keysets = []
     for lst in ctl_files.values():
         keys = [(e['name'].upper(), e['y'], e['x']) if e['status'] == 'ok' else None for e in lst]
         for k in keys:
             if k:
                 decide(k)
-        for i, k in enumerate(keys):
-            if not k or decided[k][0] != '?' or decided[k][1].startswith('依前後'):
-                continue
-            near = collections.Counter(decided[q][0] for q in keys[max(0, i - 15):i + 16]
-                                       if q and q != k and decided[q][0] != '?' and not decided[q][1].startswith('依前後'))
-            tot = sum(near.values())
-            if tot >= 4:
-                dm, n = near.most_common(1)[0]
-                if n >= 0.85 * tot:
-                    decided[k] = (dm, '依同一份 CTL 前後的點（%d/%d 點是 %s）' % (n, tot, dm[-2:]))
+        keysets.append(keys)
+    for _ in range(3):
+        changed = 0
+        for keys in keysets:
+            for i, k in enumerate(keys):
+                if not k or decided[k][0] != '?':
+                    continue
+                near = collections.Counter(decided[q][0] for q in keys[max(0, i - 15):i + 16]
+                                           if q and q != k and decided[q][0] != '?')
+                tot = sum(near.values())
+                if tot >= 4:
+                    dm, n = near.most_common(1)[0]
+                    if n >= 0.85 * tot:
+                        decided[k] = (dm, '依同一份 CTL 前後的點（%d/%d 點是 %s）' % (n, tot, dm[-2:]))
+                        changed += 1
+        if not changed:
+            break
 
     ctl_entries = []
     stats = collections.Counter()

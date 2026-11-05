@@ -87,7 +87,8 @@ class Platform:
             os.makedirs(d, exist_ok=True)
         self.cfg_path = os.path.join(self.data, 'config.json')
         # twd67_sections：None = 段名表紅字 + 自動偵測；清單 = 管理者指定
-        self.cfg = {'tolerance_cm': 2.0, 'section_names': {}, 'twd67_sections': None}
+        self.cfg = {'tolerance_cm': 2.0, 'section_names': {}, 'twd67_sections': None,
+                    'abolished_sections': list(basemap.ABOLISHED)}
         if os.path.exists(self.cfg_path):
             with open(self.cfg_path, encoding='utf-8') as f:
                 self.cfg.update(json.load(f))
@@ -126,7 +127,8 @@ class Platform:
     # ── 底圖 ──
     def rebuild(self, force=True):
         with self.lock:
-            self.index = basemap.build(self.base, self.cache, self.cfg.get('twd67_sections'), force=force)
+            self.index = basemap.build(self.base, self.cache, self.cfg.get('twd67_sections'), force=force,
+                                       abolished=self.cfg.get('abolished_sections'))
             self.trans = {s['section']: datum.Transform.from_json(s['tparams'])
                           for s in self.index['sections'] if s.get('tparams')}
             with open(os.path.join(self.cache, 'controls.json'), encoding='utf-8') as f:
@@ -523,6 +525,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/info':
             return self.send(200, {'datum': P.index.get('datum', {}), 'tolerance_cm': P.cfg.get('tolerance_cm', 2.0),
                                    'section_names': P.names(), 'custom_names': P.cfg.get('section_names', {}),
+                                   'abolished': P.cfg.get('abolished_sections', []),
                                    'sections': P.index['sections'], 'ctl': P.index['ctl']})
         if path == '/api/controls':
             return self.send_file(os.path.join(P.cache, 'controls.json'))
@@ -646,6 +649,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/config':
             d = self.body_json()
             changed = False
+            if isinstance(d.get('abolished_sections'), list):
+                v = sorted(set(str(x).strip().upper() for x in d['abolished_sections'] if str(x).strip()))
+                if v != P.cfg.get('abolished_sections'):
+                    P.cfg['abolished_sections'] = v
+                    changed = True
             if 'twd67_sections' in d:
                 v = d['twd67_sections']
                 v = None if v is None else sorted(set(str(x).strip().upper() for x in v if str(x).strip()))

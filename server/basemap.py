@@ -18,7 +18,13 @@ SHEET_67 = ['KC' + s for s in (
     '0346 0347 0348 0349 0350 0351 0352 0353 0357 0358 0359 0360 0361 0362 0363 0364 0365 '
     '0367 0370 0375 0376 0377 0378 0379 0380').split()]
 
-VERSION = 3   # 快取格式／演算法改了就加 1，強制重建
+# 已廢掉的段：資料還在，但跟現行的段界址點重合，不顯示、不參與判斷
+ABOLISHED = ['KC0326', 'KC0372', 'KC0373', 'KC0374']
+
+# 旁邊都是圖解區（沒有 97 數值段可以算共同點）的 67 段
+NO_NEIGHBOUR_NOTE = '旁邊是圖解區，沒有 97 數值段可以算共同點，用全區參數'
+
+VERSION = 4   # 快取格式／演算法改了就加 1，強制重建
 
 
 def _unzip_all(base_dir):
@@ -69,8 +75,9 @@ def find_sections(base_dir):
     return found
 
 
-def _signature(found, sec67):
-    h = hashlib.sha1(('v%d|%s' % (VERSION, ','.join(sorted(sec67 or [])) if sec67 is not None else 'auto')).encode())
+def _signature(found, sec67, abolished):
+    h = hashlib.sha1(('v%d|%s|%s' % (VERSION, ','.join(sorted(sec67 or [])) if sec67 is not None else 'auto',
+                                     ','.join(sorted(abolished)))).encode())
     for sec in sorted(found):
         for ext in sorted(found[sec]):
             p = found[sec][ext]
@@ -102,13 +109,16 @@ def _nearest(g, y, x, cell=50.0, r=6):
     return math.sqrt(best)
 
 
-def build(base_dir, cache_dir, sec67=None, force=False, log=print):
+def build(base_dir, cache_dir, sec67=None, force=False, log=print, abolished=None):
     """
     建立快取。sec67：管理者指定的 67 段清單（None = 用段名表紅字 + 自動偵測）。
     回傳索引（sections、controls、datum 的摘要）
     """
-    found = find_sections(base_dir)
-    sig = _signature(found, sec67)
+    abolished = set(ABOLISHED if abolished is None else abolished)
+    found_all = find_sections(base_dir)
+    found = {k: v for k, v in found_all.items() if k not in abolished}
+    skipped = sorted(k for k in found_all if k in abolished)
+    sig = _signature(found, sec67, abolished)
     os.makedirs(os.path.join(cache_dir, 'sections'), exist_ok=True)
     idx_path = os.path.join(cache_dir, 'index.json')
     if not force and os.path.exists(idx_path):
@@ -187,7 +197,7 @@ def build(base_dir, cache_dir, sec67=None, force=False, log=print):
         entry = {'section': sec, 'parcels': len(parcels), 'points': len(coa_raw[sec]), 'missing': missing,
                  'files': sorted(files), 'datum': 'TWD67' if sec in eff67 else 'TWD97',
                  'datum_src': '、'.join(src) if sec in eff67 and sec67 is None else ('管理者指定' if sec in eff67 else ''),
-                 'transform': T.describe() if T else '', 'tparams': T.to_json() if T else None,
+                 'transform': (T.describe() + ('（%s）' % NO_NEIGHBOUR_NOTE if T is glob_t else '')) if T else '', 'tparams': T.to_json() if T else None,
                  'group': det['group_of'].get(sec)}
         if sec in SHEET_67 and sec not in eff67:
             entry['datum_warn'] = '段名表標紅字（67），但目前設定為 97'
@@ -304,7 +314,7 @@ def build(base_dir, cache_dir, sec67=None, force=False, log=print):
                                                                           'datum', 'datum_why', 'fix')} for e in ctl_entries]},
                   f, ensure_ascii=False, separators=(',', ':'))
     summary = collections.Counter(i['type'] for i in issues)
-    idx = {'signature': sig, 'sections': sections,
+    idx = {'signature': sig, 'sections': sections, 'abolished': skipped,
            'datum': {'sec67': sorted(eff67), 'auto67': sorted(auto67), 'sheet67': SHEET_67, 'configured': sec67 is not None,
                      'global': glob_t.describe(), 'ctl': dict(stats), 'shared_ctl': sorted(shared)},
            'ctl': {'lines': len(ctl_entries), 'points': len(controls), 'issues': dict(summary)}}

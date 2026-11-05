@@ -527,6 +527,7 @@
       return '<tr><td>' + esc(secName(s.section)) + '</td><td>' + (s.datum === 'TWD67' ? '<b style="color:#d92d20">67</b>' : '97') + '</td><td class="small">' +
         esc([s.datum_src, s.transform, s.datum_warn].filter(Boolean).join('；')) + '</td></tr>';
     }).join('') + '</table>';
+    $('secAbolished').value = (i.abolished || []).join('\n');
     $('tol').value = i.tolerance_cm;
     $('secNames').value = Object.keys(i.section_names || {}).map(function (k) { return k + '=' + i.section_names[k]; }).join('\n');
     var c = i.ctl;
@@ -566,6 +567,13 @@
     var list = ($('sec67').value.match(/[A-Za-z]{2}\d{4}|\b\d{4}\b/g) || []).map(function (c) { return /^\d/.test(c) ? 'KC' + c : c.toUpperCase(); });
     if (!confirm('把這 ' + list.length + ' 段當成 TWD67 重新換算？')) return;
     save67(list);
+  };
+  $('saveAbolished').onclick = function () {
+    var list = ($('secAbolished').value.match(/[A-Za-z]{2}\d{4}|\b\d{4}\b/g) || []).map(function (c) { return /^\d/.test(c) ? 'KC' + c : c.toUpperCase(); });
+    if (!confirm('把這 ' + list.length + ' 段當成廢段（不顯示），重新整理底圖？')) return;
+    busy(true, '重新整理底圖中，大約要一分鐘…');
+    api('/api/config', { abolished_sections: list }).then(function () { busy(false); location.reload(); })
+      .catch(function (e) { busy(false); toast(e.message); });
   };
   $('auto67').onclick = function () { if (confirm('改回「段名表紅字 + 自動偵測」？')) save67(null); };
   $('pickXlsx').onclick = function () { $('xlsxInput').click(); };

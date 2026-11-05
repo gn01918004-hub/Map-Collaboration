@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>共用資料夾測試</title>
+<style>
+  :root { --bg: #f6f7f9; --fg: #1d2330; --card: #fff; --ok: #13834a; --bad: #d92d20; --line: #d0d5dd; }
+  body { margin: 0; padding: 24px 16px; font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 640px; margin: 0 auto; background: var(--card); border-radius: 14px; padding: 20px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  button { font: inherit; font-size: 20px; padding: 14px 24px; border: 0; border-radius: 12px; background: #1f6feb; color: #fff; cursor: pointer; font-weight: bold; }
+  li { margin: 8px 0; line-height: 1.5; }
+  .ok { color: var(--ok); font-weight: bold; }
+  .bad { color: var(--bad); font-weight: bold; }
+  #result { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>共用資料夾測試</h1>
+  <p>這個網頁只會在你選的資料夾裡寫一個小測試檔，讀回來確認，再把它刪掉。不會動到其他檔案。</p>
+  <ol>
+    <li>用 <b>Edge</b> 或 <b>Chrome</b> 打開這個檔案（直接雙擊或拖進瀏覽器）。</li>
+    <li>按下面的按鈕，選 <code>\\Kcland-nas\kc外網共用\二課</code>（或它底下一個新資料夾）。</li>
+    <li>瀏覽器問「允許編輯」時按<b>允許</b>。</li>
+    <li>把結果截圖給我。</li>
+  </ol>
+  <button id="go">📂 選共用資料夾並測試</button>
+  <ul id="result"></ul>
+</main>
+<script>
+(function () {
+  var out = document.getElementById('result');
+  function line(ok, text) {
+    var li = document.createElement('li');
+    li.innerHTML = '<span class="' + (ok ? 'ok' : 'bad') + '">' + (ok ? '✔' : '✘') + '</span> ' + text;
+    out.appendChild(li);
+  }
+  function info() {
+    line(true, '瀏覽器：' + navigator.userAgent.replace(/[<>]/g, ''));
+    line(window.isSecureContext, '安全環境（isSecureContext）：' + window.isSecureContext);
+    line(!!window.showDirectoryPicker, '可以選資料夾（File System Access API）：' + (window.showDirectoryPicker ? '可以' : '不行，可能被機關政策關掉，或不是 Edge/Chrome'));
+    line(typeof DecompressionStream !== 'undefined', '可以在瀏覽器解 zip（DecompressionStream）：' + (typeof DecompressionStream !== 'undefined' ? '可以' : '不行'));
+    var big5 = false;
+    try { big5 = new TextDecoder('big5').decode(new Uint8Array([0xa4, 0xa4])) === '中'; } catch (e) { big5 = false; }
+    line(big5, '可以讀 Big5（重測系統的中文）：' + (big5 ? '可以' : '不行'));
+  }
+  document.getElementById('go').onclick = function () {
+    out.innerHTML = '';
+    info();
+    if (!window.showDirectoryPicker) return;
+    var name = '_平台測試_' + Date.now() + '.txt', text = '地籍共作平台測試 ' + new Date().toLocaleString(), t0;
+    window.showDirectoryPicker({ mode: 'readwrite' }).then(function (dir) {
+      line(true, '選到資料夾：' + dir.name);
+      t0 = performance.now();
+      return dir.getFileHandle(name, { create: true }).then(function (fh) {
+        return fh.createWritable().then(function (w) { return w.write(text).then(function () { return w.close(); }); }).then(function () {
+          line(true, '寫入測試檔成功（' + Math.round(performance.now() - t0) + ' 毫秒）');
+          return fh.getFile();
+        });
+      }).then(function (f) { return f.text(); }).then(function (back) {
+        line(back === text, '讀回來內容' + (back === text ? '一樣' : '不一樣'));
+        var n = 0, t1 = performance.now();
+        var it = dir.values();
+        function next() {
+          return it.next().then(function (r) { if (r.done || n > 2000) return; n++; return next(); });
+        }
+        return next().then(function () { line(true, '列出資料夾內容：' + n + ' 個項目（' + Math.round(performance.now() - t1) + ' 毫秒）'); });
+      }).then(function () {
+        return dir.removeEntry(name).then(function () { line(true, '刪除測試檔成功'); });
+      }).then(function () {
+        line(true, '<b>全部通過：可以用共用資料夾版本</b>');
+      });
+    }).catch(function (e) {
+      line(false, '失敗：' + String(e && (e.name + ' ' + e.message)).replace(/[<>]/g, ''));
+    });
+  };
+  info();
+})();
+</script>
+</body>
+</html>

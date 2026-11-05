@@ -108,14 +108,27 @@
         <button id="baseRebuild" class="ghost">重新整理</button>
       </div>
       <div class="card">
+        <h3>坐標系統（全部換成 TWD97 顯示）</h3>
+        <div id="datumInfo"></div>
+        <label>哪些段是 TWD67（一行一個或用逗號分開）</label>
+        <textarea id="sec67" rows="4"></textarea>
+        <div class="row">
+          <button id="save67" class="go">儲存並重新換算</button>
+          <button id="auto67" class="ghost">改回自動判斷</button>
+        </div>
+        <details><summary>每一段的判斷結果</summary><div id="datumTable"></div></details>
+      </div>
+      <div class="card">
         <h3>設定</h3>
-        <label>坐標系統</label>
-        <select id="datum"><option value="TWD97">TWD97（預設）</option><option value="TWD67">TWD67（套底圖時近似轉換）</option></select>
         <label>坐標差多少算「不符」（公分）</label>
         <input id="tol" type="number" step="0.5" min="0.5">
-        <label>段名對照（一行一個，例如 KC1114=○○段）</label>
-        <textarea id="secNames" rows="4"></textarea>
-        <button id="saveCfg" class="go">儲存設定</button>
+        <label>段名（一行一個，例如 KC1114=水尾段）</label>
+        <textarea id="secNames" rows="5"></textarea>
+        <div class="row">
+          <button id="saveCfg" class="go">儲存設定</button>
+          <button id="pickXlsx" class="ghost">從 Excel 段名表匯入</button>
+          <input type="file" id="xlsxInput" accept=".xlsx" hidden>
+        </div>
       </div>
       <div class="card">
         <h3>圖根點檔（.CTL）整理結果</h3>
@@ -127,9 +140,13 @@
             <option value="spread">各段坐標不一致</option>
             <option value="local">假設坐標</option>
             <option value="zero">坐標是 0</option>
+            <option value="datum">看不出 67 或 97</option>
             <option value="bad">看不懂的行</option>
           </select>
-          <a class="ghost btn" href="/api/export/controls.csv">⬇ 下載整理後圖根點</a>
+        </div>
+        <div class="row">
+          <a class="ghost btn" href="/api/export/ctl.zip">⬇ 標準格式 CTL（TWD97）</a>
+          <a class="ghost btn" href="/api/export/controls.csv">⬇ 圖根點清單 CSV</a>
         </div>
         <div id="issues"></div>
       </div>

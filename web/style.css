@@ -138,3 +138,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
   #side { width: 100%; height: 55%; flex: none; border-right: 0; border-top: 1px solid var(--line); }
   #legend { width: 170px; bottom: 10px; font-size: 14px; }
 }
+
+.dt { border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 6px; }
+.dt td, .dt th { border-bottom: 1px solid #eee; padding: 4px; text-align: left; vertical-align: top; }

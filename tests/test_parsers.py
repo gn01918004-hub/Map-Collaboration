@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """執行：python -m unittest discover tests"""
 import io
+import math
 import os
 import struct
 import sys
@@ -57,6 +58,15 @@ class CtlTest(unittest.TestCase):
         self.assertEqual(r[2]['y'], 2701422.114)
         self.assertEqual(r[3]['status'], 'local')
         self.assertEqual(r[4]['status'], 'zero')
+
+    def test_swapped_and_format(self):
+        r = parsers.parse_ctl('KCK020000000\nBE20    219817.7712697345.532  \nBE21    2697345.532219817.771  \n')
+        self.assertEqual([(p['name'], p['y'], p['x']) for p in r], [('BE20', 2697345.532, 219817.771), ('BE21', 2697345.532, 219817.771)])
+        self.assertIn('Y、X 寫反（已對調）', r[0]['fix'])
+        self.assertEqual(parsers.format_ctl_line('BE20', 2697345.532, 219817.771), 'BE20    2697345.532219817.771')
+        self.assertEqual(parsers.format_ctl_line('QHB186-1', 2701422.114, 213923.583), 'QHB186-12701422.114213923.583')
+        with self.assertRaises(ValueError):
+            parsers.format_ctl_line('AL01', 27496.932, 3719.797)
 
     def test_clean_same_name_different_points(self):
         e = lambda n, y, x, s: {'name': n, 'y': y, 'x': x, 'flag': '', 'status': 'ok', 'section': s, 'line': 2}
@@ -151,3 +161,40 @@ class FieldTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DatumTest(unittest.TestCase):
+    def test_detect_and_fit(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'server'))
+        import datum
+        import random
+        random.seed(3)
+        # 97 段 A、B 共用邊界；67 段 C 跟 A 共用邊界（C 存的是 67 坐標）
+        true_shift = lambda y, x: (y - 205.21 + 0.0000154 * (y - 2703000), x + 829.13 - 0.0000657 * (x - 217000))
+        edge_ab = [(2703000 + i * 7.3, 217000.0 + random.random()) for i in range(60)]
+        edge_ac = [(2703000 + random.random(), 217000 + i * 6.1) for i in range(60)]
+        inv = {}
+        for p in edge_ac:   # 找出 67 坐標：反解 true_shift
+            y, x = p
+            for _ in range(5):
+                yy, xx = true_shift(y, x)
+                y, x = y - (yy - p[0]), x - (xx - p[1])
+            inv[p] = (y, x)
+        coa = {'KC0001': edge_ab + edge_ac, 'KC0002': list(edge_ab) + [(2704000.0, 218000.0)],
+               'KC0003': [inv[p] for p in edge_ac] + [(2702000.0, 216000.0)]}
+        det = datum.detect(coa)
+        self.assertEqual(det['auto67'], {'KC0003'})
+        trans, _ = datum.build_transforms(det, {'KC0003'})
+        y, x = trans['KC0003'](*inv[edge_ac[10]])
+        self.assertLess(math.hypot(y - edge_ac[10][0], x - edge_ac[10][1]), 0.02)
+
+    def test_xlsx_names(self):
+        import zipfile as zf
+        buf = io.BytesIO()
+        with zf.ZipFile(buf, 'w') as z:
+            z.writestr('xl/sharedStrings.xml', '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                       '<si><t>0308</t></si><si><t>貓盂段貓盂小段</t></si><si><t>水尾段</t></si></sst>')
+            z.writestr('xl/worksheets/sheet1.xml', '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+                       '<row r="3"><c r="A3" t="s"><v>0</v></c><c r="B3" t="s"><v>1</v></c><c r="E3"><v>1114</v></c><c r="F3" t="s"><v>2</v></c></row>'
+                       '</sheetData></worksheet>')
+        self.assertEqual(parsers.section_names_from_xlsx(buf.getvalue()), {'KC0308': '貓盂段貓盂小段', 'KC1114': '水尾段'})

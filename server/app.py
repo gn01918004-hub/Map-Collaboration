@@ -8,6 +8,8 @@
 import argparse
 import base64
 import gzip
+import hashlib
+import hmac
 import json
 import math
 import mimetypes
@@ -26,6 +28,7 @@ from io import BytesIO
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import basemap   # noqa: E402
+import datum     # noqa: E402
 import parsers   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -83,17 +86,33 @@ class Platform:
         for d in (self.base, self.cache, self.uploads):
             os.makedirs(d, exist_ok=True)
         self.cfg_path = os.path.join(self.data, 'config.json')
-        self.cfg = {'datum': 'TWD97', 'tolerance_cm': 2.0, 'section_names': {}}
+        # twd67_sections：None = 段名表紅字 + 自動偵測；清單 = 管理者指定
+        self.cfg = {'tolerance_cm': 2.0, 'section_names': {}, 'twd67_sections': None}
         if os.path.exists(self.cfg_path):
             with open(self.cfg_path, encoding='utf-8') as f:
                 self.cfg.update(json.load(f))
-        else:
-            self.save_cfg()
+        self.cfg.pop('datum', None)   # 舊版設定：現在一律換成 TWD97
+        self.save_cfg()
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'section_names.json'), encoding='utf-8') as f:
+            self.default_names = json.load(f)
         self.lock = threading.Lock()
         self.db_path = os.path.join(self.data, 'platform.sqlite')
         with self.db() as c:
             c.executescript(SCHEMA)
-        self.rebuild(False)
+        self.ready = False
+        self.build_error = None
+        self.index = {'sections': [], 'ctl': {}, 'datum': {}}
+        self.controls, self.ctl_by_name, self.trans, self.parcel_index = [], {}, {}, None
+
+    def start(self):
+        """背景整理底圖（第一次大約 40 秒），網頁先開得起來"""
+        def run():
+            try:
+                self.rebuild(False)
+            except Exception as e:   # noqa: BLE001
+                traceback.print_exc()
+                self.build_error = str(e)
+        threading.Thread(target=run, daemon=True).start()
 
     def save_cfg(self):
         with open(self.cfg_path, 'w', encoding='utf-8') as f:
@@ -107,14 +126,16 @@ class Platform:
     # ── 底圖 ──
     def rebuild(self, force=True):
         with self.lock:
-            self.index = basemap.build(self.base, self.cache, self.cfg['datum'], force=force)
+            self.index = basemap.build(self.base, self.cache, self.cfg.get('twd67_sections'), force=force)
+            self.trans = {s['section']: datum.Transform.from_json(s['tparams'])
+                          for s in self.index['sections'] if s.get('tparams')}
             with open(os.path.join(self.cache, 'controls.json'), encoding='utf-8') as f:
                 self.controls = json.load(f)
             self.ctl_by_name = {}
             for p in self.controls:
                 self.ctl_by_name.setdefault(p['name'].upper(), []).append(p)
             self.parcel_index = None
-            self._gz = {}
+            self.ready = True
 
     def parcels(self):
         """地號索引（第一次查詢時才建立）：[(段, 地號, 中心)]"""
@@ -133,14 +154,27 @@ class Platform:
     def ll(self, y, x):
         if parsers.coord_status(y, x) != 'ok':
             return None
-        return [round(v, 7) for v in parsers.tm2_to_latlng(y, x, self.cfg['datum'])]
+        return [round(v, 7) for v in parsers.tm2_to_latlng(y, x)]
+
+    def names(self):
+        n = dict(self.default_names)
+        n.update(self.cfg.get('section_names') or {})
+        return n
+
+    def to97(self, sec, y, x):
+        T = self.trans.get(sec)
+        if T and parsers.coord_status(y, x) == 'ok':
+            return tuple(round(v, 3) for v in T(y, x))
+        return y, x
 
     def nearest_ctl(self, name, y, x):
+        """同名圖根點裡最近的一點；換算後（97）與原始坐標（可能是 67）都比，取比較近的"""
         best = None
         for p in self.ctl_by_name.get(name.upper(), []):
-            d = math.hypot(p['y'] - y, p['x'] - x)
-            if best is None or d < best[1]:
-                best = (p, d)
+            for cy, cx in [(p['y'], p['x'])] + [tuple(r) for r in p.get('raw', [])]:
+                d = math.hypot(cy - y, cx - x)
+                if best is None or d < best[1]:
+                    best = (p, d)
         return best
 
     # ── 上傳 ──
@@ -162,6 +196,21 @@ class Platform:
                     bad_ctl.append(u)
                     report.append(['warn', '%s 用到的圖根點「%s」跟圖根點檔差 %s（%s）' % (
                         u['section'], u['name'], fmt_dist(hit[1]), os.path.basename(u['src']))])
+        # 67 段的資料換成 97 再存（原始坐標留在 orig）
+        conv = sorted(set(p['section'] for p in res['points'] + res['used'] + res['links'] if p['section'] in self.trans))
+        for p in res['points'] + res['used']:
+            if p['section'] in self.trans:
+                p['orig'] = [p['y'], p['x']]
+                p['y'], p['x'] = self.to97(p['section'], p['y'], p['x'])
+        for l in res['links']:
+            if l['section'] in self.trans:
+                l['sy'], l['sx'] = self.to97(l['section'], l['sy'], l['sx'])
+                l['ty'], l['tx'] = self.to97(l['section'], l['ty'], l['tx'])
+                if l['by']:
+                    l['by'], l['bx'] = self.to97(l['section'], l['by'], l['bx'])
+        if conv:
+            report.append(['info', '%s 是 TWD67 的段，坐標已換成 TWD97 顯示（%s）' % (
+                '、'.join(self.sec_name(c) for c in conv), self.trans[conv[0]].describe())])
         # 跟其他測量員的補點比對
         with self.db() as c:
             others = [dict(r) for r in c.execute(LATEST_POINTS + " AND p.kind = '補點'")]
@@ -297,8 +346,56 @@ class Platform:
                     break
         return out[:150]
 
+    def export_ctl_zip(self):
+        """
+        每段一份標準格式的 CTL（全部 TWD97）：點名(8) Y(11) X(10)，例如「BE20    2697345.532219817.771」。
+        另附「全區圖根點_TWD97.CTL」（去重複）與「整理說明.txt」（改了什麼、哪些行拿掉）。
+        """
+        with open(os.path.join(self.cache, 'ctl_entries.json'), encoding='utf-8') as f:
+            d = json.load(f)
+        by_sec = {}
+        for e in d['entries']:
+            by_sec.setdefault(e['section'], []).append(e)
+        notes = ['圖根點整理說明（%s）' % time.strftime('%Y-%m-%d %H:%M'), '',
+                 '格式：點名 8 字、Y（縱、N）11 字、X（橫、E）10 字，小數 3 位，全部是 TWD97。',
+                 'Y/X 判斷：整數 7 位是 Y、6 位是 X（同轉換系統），寫反的已對調。',
+                 'X 後面多出來的字（第 4 位小數或註記碼）照固定欄寬捨去。', '']
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for sec in sorted(by_sec):
+                lines = [d['headers'].get(sec, '')]
+                for e in by_sec[sec]:
+                    tag = '%s 第 %s 行 %s' % (sec, e['line'], e['name'])
+                    if e['status'] != 'ok':
+                        notes.append('拿掉 %s：%s' % (tag, {'local': '假設坐標', 'zero': '坐標是 0', 'bad': '看不懂'}.get(e['status'], e['status'])))
+                        continue
+                    try:
+                        lines.append(parsers.format_ctl_line(e['name'], e['y'], e['x']))
+                    except ValueError as err:
+                        notes.append('拿掉 %s：%s' % (tag, err))
+                        continue
+                    msg = list(e.get('fix') or [])
+                    if e.get('datum') == 'TWD67':
+                        msg.append('67→97（原 %.3f %.3f；%s）' % (e['raw'][0], e['raw'][1], e.get('datum_why', '')))
+                    elif e.get('datum') == '?':
+                        msg.append('看不出 67 或 97，照原值當 97，請確認')
+                    if msg:
+                        notes.append('%s：%s' % (tag, '；'.join(msg)))
+                zf.writestr('%s/%s.CTL' % (sec, sec), '\r\n'.join(lines) + '\r\n')
+            allp = []
+            for p in self.controls:
+                if p['status'] != 'ok':
+                    continue
+                try:
+                    allp.append(parsers.format_ctl_line(p['name'], p['y'], p['x']))
+                except ValueError:
+                    pass
+            zf.writestr('全區圖根點_TWD97.CTL', '\r\n'.join(['KCK000000000'] + allp) + '\r\n')
+            zf.writestr('整理說明.txt', '\ufeff' + '\r\n'.join(notes))
+        return buf.getvalue()
+
     def sec_name(self, s):
-        n = self.cfg.get('section_names', {}).get(s)
+        n = self.names().get(s)
         return '%s(%s)' % (n, s) if n else s
 
 
@@ -308,9 +405,39 @@ def fmt_dist(d):
 
 # ───────────────────────── HTTP ─────────────────────────
 
+LOGIN_HTML = '''<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>地籍共作平台</title>
+<style>body{font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;background:#12355b;margin:0;
+display:flex;align-items:center;justify-content:center;min-height:100vh}form{background:#fff;padding:28px;border-radius:16px;
+width:320px;max-width:90%%}h1{font-size:22px;margin:0 0 16px}input{width:100%%;box-sizing:border-box;font-size:20px;padding:12px;
+border:2px solid #d0d5dd;border-radius:10px}button{margin-top:12px;width:100%%;font-size:20px;padding:12px;border:0;border-radius:10px;
+background:#13834a;color:#fff;font-weight:bold}p{color:#d92d20}</style></head><body>
+<form method="post" action="/login"><h1>🗺 地籍共作平台</h1><input type="password" name="pw" placeholder="請輸入共用密碼" autofocus>
+<button>進入</button>%s</form></body></html>'''
+
+
 class Handler(BaseHTTPRequestHandler):
     platform = None
+    password = os.environ.get('ACCESS_PASSWORD', '')
     server_version = 'MapCollab/1.0'
+
+    def token(self):
+        return hmac.new(self.password.encode(), b'map-collab', hashlib.sha256).hexdigest()
+
+    def authed(self):
+        if not self.password:
+            return True
+        for part in (self.headers.get('Cookie') or '').split(';'):
+            k, _, v = part.strip().partition('=')
+            if k == 'mc_auth' and hmac.compare_digest(v, self.token()):
+                return True
+        return False
+
+    def need_login(self):
+        if self.path.startswith('/api/'):
+            self.send(401, {'error': '請重新整理網頁並輸入密碼'})
+        else:
+            self.send(200, LOGIN_HTML % '', 'text/html; charset=utf-8')
 
     def log_message(self, fmt, *args):
         sys.stderr.write('%s %s\n' % (time.strftime('%H:%M:%S'), fmt % args))
@@ -349,6 +476,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if self.path.split('?')[0] == '/login':   # 也是 Render 的健康檢查
+                return self.send(200, LOGIN_HTML % '', 'text/html; charset=utf-8')
+            if not self.authed():
+                return self.need_login()
             self.route_get()
         except Exception as e:   # noqa: BLE001
             traceback.print_exc()
@@ -356,6 +487,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if self.path == '/login':
+                n = int(self.headers.get('Content-Length') or 0)
+                pw = urllib.parse.parse_qs(self.rfile.read(n).decode('utf-8')).get('pw', [''])[0]
+                if self.password and hmac.compare_digest(pw, self.password):
+                    self.send_response(303)
+                    self.send_header('Location', '/')
+                    self.send_header('Set-Cookie', 'mc_auth=%s; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax' % self.token())
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                return self.send(200, LOGIN_HTML % '<p>密碼不對，再試一次</p>', 'text/html; charset=utf-8')
+            if not self.authed():
+                return self.need_login()
             self.route_post()
         except Exception as e:   # noqa: BLE001
             traceback.print_exc()
@@ -366,6 +510,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(u.path)
         qs = urllib.parse.parse_qs(u.query)
+        if path.startswith('/api/') and not P.ready:
+            return self.send(503, {'error': P.build_error and ('底圖整理失敗：' + P.build_error) or '底圖整理中，請等一分鐘再重新整理網頁',
+                                   'building': True})
         if path == '/' or path == '/index.html':
             return self.send_file(os.path.join(WEB, 'index.html'))
         if path.startswith('/web/'):
@@ -374,8 +521,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(403, {'error': '不可以'})
             return self.send_file(full, cache='/vendor/' in path)
         if path == '/api/info':
-            return self.send(200, {'datum': P.cfg['datum'], 'tolerance_cm': P.cfg.get('tolerance_cm', 2.0),
-                                   'section_names': P.cfg.get('section_names', {}),
+            return self.send(200, {'datum': P.index.get('datum', {}), 'tolerance_cm': P.cfg.get('tolerance_cm', 2.0),
+                                   'section_names': P.names(), 'custom_names': P.cfg.get('section_names', {}),
                                    'sections': P.index['sections'], 'ctl': P.index['ctl']})
         if path == '/api/controls':
             return self.send_file(os.path.join(P.cache, 'controls.json'))
@@ -418,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
                                                           ' '.join(p['sections']), p['count'], ' '.join(p['flags']),
                                                           '；'.join(p['notes'])]))
             return self.send_download('\ufeff' + '\r\n'.join(rows), '圖根點整理.csv')
+        if path == '/api/export/ctl.zip':
+            return self.send_bytes(P.export_ctl_zip(), 'application/zip', '圖根點_TWD97.zip')
         if path == '/api/export/field.csv':
             d = P.field_data()
             rows = ['種類,點名,Y(縱),X(橫),段,測量員,上傳時間,來源檔']
@@ -427,6 +576,14 @@ class Handler(BaseHTTPRequestHandler):
                                                           os.path.basename(p['src'])]))
             return self.send_download('\ufeff' + '\r\n'.join(rows), '補點參考點.csv')
         return self.send(404, {'error': '找不到 ' + path})
+
+    def send_bytes(self, data, ctype, filename):
+        self.send_response(200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(filename))
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def send_download(self, text, filename):
         data = text.encode('utf-8')
@@ -475,19 +632,32 @@ class Handler(BaseHTTPRequestHandler):
                     fh.write(base64.b64decode(f['b64']))
             P.rebuild(True)
             return self.send(200, {'ok': True, 'sections': len(P.index['sections']), 'ctl': P.index['ctl']})
+        if path == '/api/section_names/xlsx':
+            d = self.body_json()
+            names = parsers.section_names_from_xlsx(base64.b64decode(d['b64']))
+            if not names:
+                return self.send(400, {'error': '這個 Excel 裡找不到「段代碼＋段名」'})
+            P.cfg.setdefault('section_names', {}).update(names)
+            P.save_cfg()
+            return self.send(200, {'ok': True, 'count': len(names)})
         if path == '/api/base/rebuild':
             P.rebuild(True)
             return self.send(200, {'ok': True, 'sections': len(P.index['sections']), 'ctl': P.index['ctl']})
         if path == '/api/config':
             d = self.body_json()
             changed = False
-            if d.get('datum') in ('TWD97', 'TWD67') and d['datum'] != P.cfg['datum']:
-                P.cfg['datum'] = d['datum']
-                changed = True
+            if 'twd67_sections' in d:
+                v = d['twd67_sections']
+                v = None if v is None else sorted(set(str(x).strip().upper() for x in v if str(x).strip()))
+                if v != P.cfg.get('twd67_sections'):
+                    P.cfg['twd67_sections'] = v
+                    changed = True
             if 'tolerance_cm' in d:
                 P.cfg['tolerance_cm'] = float(d['tolerance_cm'])
             if isinstance(d.get('section_names'), dict):
-                P.cfg['section_names'] = {k.upper(): v for k, v in d['section_names'].items() if v}
+                # 只存跟預設段名表不一樣的
+                P.cfg['section_names'] = {k.upper(): v for k, v in d['section_names'].items()
+                                          if v and P.default_names.get(k.upper()) != v}
             P.save_cfg()
             if changed:
                 P.rebuild(True)
@@ -520,19 +690,22 @@ def local_ips():
 
 def main():
     ap = argparse.ArgumentParser(description='地籍共作平台')
-    ap.add_argument('--port', type=int, default=8080)
+    # 雲端（Render）用環境變數：PORT、DATA_DIR、ACCESS_PASSWORD
+    ap.add_argument('--port', type=int, default=int(os.environ.get('PORT', 8080)))
     ap.add_argument('--host', default='0.0.0.0')
-    ap.add_argument('--data', default=os.path.join(ROOT, 'data'))
+    ap.add_argument('--data', default=os.environ.get('DATA_DIR') or os.path.join(ROOT, 'data'))
     a = ap.parse_args()
     print('讀取資料中，第一次可能要等一兩分鐘…')
     Handler.platform = Platform(a.data)
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
+    Handler.platform.start()
     print('=' * 56)
     print(' 地籍共作平台已啟動！請大家用瀏覽器打開：')
     for ip in local_ips() or ['本機IP']:
         print('   http://%s:%d' % (ip, a.port))
     print('   （這台電腦自己用：http://localhost:%d）' % a.port)
     print(' 資料放在：' + Handler.platform.data)
+    print(' 密碼：' + ('已設定（ACCESS_PASSWORD）' if Handler.password else '沒有設定，誰都能進'))
     print(' 要關掉平台：關閉這個視窗')
     print('=' * 56)
     try:

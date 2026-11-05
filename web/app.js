@@ -158,7 +158,10 @@
     var h = '<div class="pop"><h4>圖根點 ' + esc(p.name) + '</h4><table>' +
       '<tr><td>Y（縱）</td><td>' + f3(p.y) + '</td></tr><tr><td>X（橫）</td><td>' + f3(p.x) + '</td></tr>' +
       '<tr><td>出現在</td><td>' + esc(p.sections.map(secName).join('、')) + '（' + p.count + ' 次）</td></tr>' +
-      (p.flags.length ? '<tr><td>註記碼</td><td>' + esc(p.flags.join(' ')) + '</td></tr>' : '') + '</table>';
+      (p.flags.length ? '<tr><td>註記碼</td><td>' + esc(p.flags.join(' ')) + '</td></tr>' : '') +
+      '<tr><td>坐標系統</td><td>' + (p.datum === 'TWD67' ? '原為 67，已換成 97' : p.datum === '?' ? '<b style="color:#d92d20">不確定</b>' : 'TWD97') + '</td></tr>' +
+      (p.raw ? '<tr><td>CTL 原始值</td><td>' + p.raw.map(function (r) { return f3(r[0]) + ', ' + f3(r[1]); }).join('<br>') + '</td></tr>' : '') +
+      (p.fix ? '<tr><td>格式修正</td><td class="small">' + esc(p.fix.join('、')) + '</td></tr>' : '') + '</table>';
     (p.notes || []).forEach(function (n) { h += '<div class="w">⚠ ' + esc(n) + '</div>'; });
     var us = usedByCtl[p.id] || [];
     if (us.length) {
@@ -194,6 +197,7 @@
     var h = '<div class="pop"><h4>' + esc(p.kind) + ' ' + esc(p.name) + '</h4><table>' +
       '<tr><td>Y（縱）</td><td>' + f3(p.y) + '</td></tr><tr><td>X（橫）</td><td>' + f3(p.x) + '</td></tr>' +
       '<tr><td>段</td><td>' + esc(secName(p.section)) + '</td></tr>' +
+      (p.extra && p.extra.orig ? '<tr><td>原始(67)</td><td>' + f3(p.extra.orig[0]) + ', ' + f3(p.extra.orig[1]) + '</td></tr>' : '') +
       '<tr><td>測量員</td><td><span class="dot-who" style="background:' + colorOf(p.surveyor) + '"></span>' + esc(p.surveyor) + '</td></tr>' +
       '<tr><td>上傳時間</td><td>' + when(p.created) + '</td></tr>' +
       '<tr><td>來源檔</td><td>' + esc(String(p.src).split('/').pop()) + '</td></tr></table>';
@@ -503,7 +507,7 @@
   $('cancelUpload').onclick = resetUpload;
 
   // ── 管理 ──
-  var ISSUE_TEXT = { samename: '同名不同點', spread: '各段坐標不一致', local: '假設坐標', zero: '坐標是 0', bad: '看不懂的行' };
+  var ISSUE_TEXT = { samename: '同名不同點', spread: '各段坐標不一致', local: '假設坐標', zero: '坐標是 0', bad: '看不懂的行', datum: '看不出 67 或 97' };
   var issues = null;
   function renderAdmin() {
     var i = S.info, secs = i.sections || [];
@@ -511,8 +515,18 @@
     var miss = secs.filter(function (s) { return s.missing; });
     $('baseInfo').innerHTML = '<h3>數值地籍圖</h3><div class="stats"><div class="stat"><b>' + secs.length + '</b>段</div><div class="stat"><b>' + parcels.toLocaleString() +
       '</b>筆地號</div><div class="stat"><b>' + (i.ctl.points || 0).toLocaleString() + '</b>圖根點</div></div>' +
-      '<div class="small">坐標系統：' + esc(i.datum) + '。' + (miss.length ? '有 ' + miss.length + ' 段的 BNP 用到 COA 裡沒有的點號（' + esc(miss.slice(0, 5).map(function (s) { return s.section + ' ' + s.missing + ' 個'; }).join('、')) + '），那些邊畫不出來。' : '') + '</div>';
-    $('datum').value = i.datum;
+      '<div class="small">' + (miss.length ? '有 ' + miss.length + ' 段的 BNP 用到 COA 裡沒有的點號（' + esc(miss.slice(0, 5).map(function (s) { return s.section + ' ' + s.missing + ' 個'; }).join('、')) + '），那些邊畫不出來。' : '') + '</div>';
+    var dm = i.datum || {}, s67 = dm.sec67 || [];
+    $('datumInfo').innerHTML = '<div class="small">目前 <b>' + s67.length + '</b> 段是 TWD67，已換成 97。換算參數用 67 段跟旁邊 97 段<b>共同的界址點</b>算（' + esc(dm.global || '') +
+      '）。' + (dm.configured ? '（管理者指定的清單）' : '（段名表紅字 + 自動偵測）') + '</div>' +
+      '<div class="small">圖根點每一行各自判斷：67 ' + ((dm.ctl || {}).TWD67 || 0).toLocaleString() + ' 行、97 ' + ((dm.ctl || {}).TWD97 || 0).toLocaleString() +
+      ' 行、看不出來 ' + ((dm.ctl || {})['?'] || 0).toLocaleString() + ' 行（大份 CTL 是好幾段共用的，67、97 混在一起）。</div>' +
+      secs.filter(function (s) { return s.datum_warn; }).map(function (s) { return '<div class="msg warn">' + esc(secName(s.section) + '：' + s.datum_warn) + '</div>'; }).join('');
+    $('sec67').value = s67.map(function (c) { return c + ' ' + ((i.section_names || {})[c] || ''); }).join('\n');
+    $('datumTable').innerHTML = '<table class="dt"><tr><th>段</th><th>系統</th><th>依據</th></tr>' + secs.map(function (s) {
+      return '<tr><td>' + esc(secName(s.section)) + '</td><td>' + (s.datum === 'TWD67' ? '<b style="color:#d92d20">67</b>' : '97') + '</td><td class="small">' +
+        esc([s.datum_src, s.transform, s.datum_warn].filter(Boolean).join('；')) + '</td></tr>';
+    }).join('') + '</table>';
     $('tol').value = i.tolerance_cm;
     $('secNames').value = Object.keys(i.section_names || {}).map(function (k) { return k + '=' + i.section_names[k]; }).join('\n');
     var c = i.ctl;
@@ -538,10 +552,29 @@
   $('saveCfg').onclick = function () {
     var names = {};
     $('secNames').value.split(/\n/).forEach(function (l) { var m = /^\s*([A-Za-z]{2}\d{4})\s*[=,，:：\s]\s*(.+?)\s*$/.exec(l); if (m) names[m[1].toUpperCase()] = m[2]; });
-    var datumChanged = $('datum').value !== S.info.datum;
-    busy(true, datumChanged ? '重新換算坐標中，要等一下…' : '儲存中…');
-    api('/api/config', { datum: $('datum').value, tolerance_cm: parseFloat($('tol').value) || 2, section_names: names })
-      .then(function () { busy(false); toast('已儲存'); return datumChanged ? location.reload() : loadInfo(); })
+    busy(true, '儲存中…');
+    api('/api/config', { tolerance_cm: parseFloat($('tol').value) || 2, section_names: names })
+      .then(function () { busy(false); toast('已儲存'); return loadInfo().then(renderAdmin); })
+      .catch(function (e) { busy(false); toast(e.message); });
+  };
+  function save67(list) {
+    busy(true, '重新換算坐標中，大約要一分鐘…');
+    api('/api/config', { twd67_sections: list }).then(function () { busy(false); location.reload(); })
+      .catch(function (e) { busy(false); toast(e.message); });
+  }
+  $('save67').onclick = function () {
+    var list = ($('sec67').value.match(/[A-Za-z]{2}\d{4}|\b\d{4}\b/g) || []).map(function (c) { return /^\d/.test(c) ? 'KC' + c : c.toUpperCase(); });
+    if (!confirm('把這 ' + list.length + ' 段當成 TWD67 重新換算？')) return;
+    save67(list);
+  };
+  $('auto67').onclick = function () { if (confirm('改回「段名表紅字 + 自動偵測」？')) save67(null); };
+  $('pickXlsx').onclick = function () { $('xlsxInput').click(); };
+  $('xlsxInput').onchange = function () {
+    var f = this.files[0]; this.value = '';
+    if (!f) return;
+    busy(true, '讀取段名表…');
+    toB64(f).then(function (b) { return api('/api/section_names/xlsx', { b64: b }); })
+      .then(function (r) { busy(false); toast('匯入 ' + r.count + ' 個段名'); return loadInfo().then(renderAdmin); })
       .catch(function (e) { busy(false); toast(e.message); });
   };
   function baseUpload(list) {
@@ -602,7 +635,13 @@
     });
   }
   busy(true, '載入地圖資料中…');
-  loadInfo().then(function () {
+  function waitReady() {
+    return api('/api/info').catch(function (e) {
+      if (e.data && e.data.building) { busy(true, e.message); return new Promise(function (r) { setTimeout(r, 5000); }).then(waitReady); }
+      throw e;
+    });
+  }
+  waitReady().then(loadInfo).then(function () {
     var secs = S.info.sections.filter(function (s) { return s.bbox; });
     if (secs.length) {
       var b = L.latLngBounds([]);

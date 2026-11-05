@@ -12,6 +12,7 @@
   .L02  控制點清單（列印檔）、.L14 界址點/參考點清單、.L20 補點清單
   .B90  協助指界計算（測站、標定點、施測點）
 """
+import collections
 import io
 import math
 import os
@@ -200,26 +201,58 @@ def parse_par(text):
 
 def parse_ctl(text):
     """
-    .CTL 圖根點。固定欄寬：點名(8) Y(11) X(10) 註記(2)。
-    很亂的地方：點名裡夾 tab、點名剛好 8 字跟 Y 黏在一起、假設坐標、X=0、尾巴有註記碼。
-    回傳 [{'name','y','x','flag','status','line'}]
+    .CTL 圖根點。標準格式（點名 8、Y 11、X 10，各 3 位小數），例如：
+        BE20    2697345.532219817.771
+    很亂的地方：點名裡夾 tab、點名剛好 8 字跟 Y 黏在一起、X 後面多一碼（第 4 位小數或註記，
+    照轉換系統的固定欄寬規則捨去）、假設坐標、X=0。
+    Y/X 判斷沿用轉換系統：整數 7 位的是 Y（縱、N）、6 位的是 X（橫、E），寫反了自動對調。
+    回傳 [{'name','y','x','flag','status','line','fix'}]，fix 是這行被修正了什麼
     """
     res = []
     for i, raw in enumerate(lines_of(text)):
         if i == 0 or not raw.strip():
             continue
-        l = raw.replace('\t', ' ')
+        fix = []
+        l = raw
+        if '\t' in l:
+            l = l.replace('\t', ' ')
+            fix.append('點名裡有 tab')
         name, y, x, flag = l[0:8].strip(), l[8:19].strip(), l[19:29].strip(), l[29:31].strip()
-        if not name or not is_num(y) or not is_num(x):
+        if not name or not is_num(y) or not is_num(x) or ' ' in name:
             t = l.split()
             if len(t) >= 3 and is_num(t[1]) and is_num(t[2]):
                 name, y, x, flag = t[0], t[1], t[2], ' '.join(t[3:])
+                fix.append('欄位沒對齊')
             else:
-                res.append({'name': l.strip(), 'y': None, 'x': None, 'flag': '', 'status': 'bad', 'line': i + 1})
+                res.append({'name': l.strip(), 'y': None, 'x': None, 'flag': '', 'status': 'bad', 'line': i + 1,
+                            'fix': ['看不懂']})
                 continue
+        if not ((is_y(y) and is_x(x)) or (is_x(y) and is_y(x))):
+            # 固定欄寬切不出合理的 Y/X（例如 X 寫在前面：219817.7712697345.532）→ 改用數字樣式切
+            m = re.match(r'^\s*(\d{6,7}\.\d{3})\s*(\d{6,7}\.\d{3})(\S*)', l[8:])
+            if m:
+                y, x, flag = m.group(1), m.group(2), m.group(3)
+                fix.append('欄位沒對齊')
+        if flag:
+            fix.append('X 後面多了「%s」（已捨去）' % flag)
+        if is_x(y) and is_y(x):
+            y, x = x, y
+            fix.append('Y、X 寫反（已對調）')
         y, x = float(y), float(x)
-        res.append({'name': name, 'y': y, 'x': x, 'flag': flag, 'status': coord_status(y, x), 'line': i + 1})
+        res.append({'name': name, 'y': y, 'x': x, 'flag': flag, 'status': coord_status(y, x), 'line': i + 1,
+                    'fix': fix})
     return res
+
+
+def format_ctl_line(name, y, x):
+    """輸出成標準格式：點名(8) Y(11) X(10)，例如「BE20    2697345.532219817.771」"""
+    name = str(name).replace('\t', '').strip()
+    if len(name) > 8:
+        raise ValueError('點名超過 8 個字：%s' % name)
+    ys, xs = '%.3f' % y, '%.3f' % x
+    if not (is_y(ys) and is_x(xs)):
+        raise ValueError('%s 的坐標不是台灣 TM2（Y 要 7 位整數、X 要 6 位整數）：%s %s' % (name, ys, xs))
+    return '%-8s%11s%10s' % (name, ys, xs)
 
 
 def clean_controls(entries, tol=0.10):
@@ -244,11 +277,13 @@ def clean_controls(entries, tol=0.10):
         groups = []
         for e in by_name[key]:
             for g in groups:
-                if math.hypot(g['y'] - e['y'], g['x'] - e['x']) <= tol:
+                # 67 換算過來的點有幾公分到幾十公分的轉換誤差，放寬到 50 公分
+                t = 0.5 if (e.get('datum') == 'TWD67') != g.get('d67', e.get('datum') == 'TWD67') else tol
+                if math.hypot(g['y'] - e['y'], g['x'] - e['x']) <= t:
                     g['items'].append(e)
                     break
             else:
-                groups.append({'y': e['y'], 'x': e['x'], 'items': [e]})
+                groups.append({'y': e['y'], 'x': e['x'], 'items': [e], 'd67': e.get('datum') == 'TWD67'})
         for gi, g in enumerate(groups):
             votes = {}
             for e in g['items']:
@@ -276,8 +311,32 @@ def clean_controls(entries, tol=0.10):
                 notes.append('各檔坐標不一致，最多差 %.1f cm（取出現最多次的）' % (spread * 100))
             if len(groups) > 1:
                 notes.append('同名但不同點：共有 %d 個「%s」' % (len(groups), name))
+            dms = set(e.get('datum') for e in g['items'] if e.get('datum'))
+            if 'TWD97' in dms:
+                p['datum'] = 'TWD97'
+                if 'TWD67' in dms:
+                    # 同一點 67、97 兩份都有 → 用 97 原檔的坐標
+                    o = [e for e in g['items'] if e.get('datum') == 'TWD97']
+                    vv = collections.Counter((round(e['y'], 3), round(e['x'], 3)) for e in o)
+                    (p['y'], p['x']), _ = vv.most_common(1)[0]
+                    notes.append('同一點在某些 CTL 是 67、某些是 97，用 97 的坐標')
+            elif 'TWD67' in dms:
+                p['datum'] = 'TWD67'
+                notes.append('原為 TWD67，已換算成 97（%s）' % g['items'][0].get('datum_why', ''))
+            elif '?' in dms:
+                p['datum'] = '?'
+                notes.append('看不出是 67 還是 97，暫時當作 97，請確認')
+            raws = sorted(set(tuple(e['raw']) for e in g['items'] if e.get('raw')))
+            if raws and any(r != (p['y'], p['x']) for r in raws):
+                p['raw'] = [list(r) for r in raws]
+            fixes = sorted(set(f for e in g['items'] for f in (e.get('fix') or [])))
+            if fixes:
+                p['fix'] = fixes
             p['notes'] = notes
             points.append(p)
+            if p.get('datum') == '?':
+                issues.append({'type': 'datum', 'name': name, 'section': ','.join(secs), 'msg': '看不出是 67 還是 97（暫時當作 97）',
+                               'id': p['id']})
             if p['status'] != 'ok':
                 issues.append({'type': p['status'], 'name': name, 'section': ','.join(secs), 'msg': notes[0],
                                'id': p['id']})
@@ -461,7 +520,7 @@ def parse_field_files(files):
     """
     files：[(path, bytes)]（zip 會自動解開）
     回傳 {'sections': {段: {...}}, 'points': [...], 'links': [...], 'report': [...], 'used': [...]}
-      points 的 kind：'補點'、'參考點'、'控制點'（測量員新增、不是 Q 開頭的）
+      points 的 kind：'補點'（D20）、'參考點'（D14 編碼非 0）
       used：這次外業用到的圖根點（L02、B90 測站／標定點、CSV 的非數字點名）
     """
     files = expand_zips(files)
@@ -516,9 +575,8 @@ def parse_field_files(files):
             for r in db['records']:
                 if not r['CTL_NAME'] or not is_num(r['CTL_Y']) or not is_num(r['CTL_X']):
                     continue
-                lvl = r.get('CTL_LEVEL', '')
-                kind = '補點' if 'Q' in lvl.upper() or r['CTL_NAME'].upper().startswith('Q') else '控制點'
-                add(kind, r['CTL_NAME'], float(r['CTL_Y']), float(r['CTL_X']), path, level=lvl)
+                # D20 只會有補點（Q 開頭）
+                add('補點', r['CTL_NAME'], float(r['CTL_Y']), float(r['CTL_X']), path, level=r.get('CTL_LEVEL', ''))
         # D14：參考點（COT_REF 非 0）
         for path, data in by_ext.get('D14', []):
             try:
@@ -587,7 +645,7 @@ def parse_field_files(files):
                     use(p['name'], p['y'], p['x'], path, 'CSV 儀器檔')
         # 補點本身也會出現在 used 清單裡，拿掉
         for k in list(sec_used):
-            if ('補點', k) in sec_pts or ('控制點', k) in sec_pts:
+            if ('補點', k) in sec_pts:
                 del sec_used[k]
         pts = list(sec_pts.values())
         points.extend(pts)
@@ -600,3 +658,49 @@ def parse_field_files(files):
     if not groups:
         report.append(('error', '找不到重測系統的資料（需要 KCxxxx.D20、D14、L02 或 B90 等檔案）'))
     return {'points': points, 'links': links, 'used': used, 'report': report, 'sections': sorted(groups)}
+
+
+# ───────────────────────── 段名表（xlsx） ─────────────────────────
+
+def read_xlsx_cells(data):
+    """不用 openpyxl 的簡易 xlsx 讀取：回傳 [[(欄字母, 值)…]…]（第一個工作表）"""
+    import xml.etree.ElementTree as ET
+    ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    shared = []
+    if 'xl/sharedStrings.xml' in zf.namelist():
+        root = ET.fromstring(zf.read('xl/sharedStrings.xml'))
+        for si in root.findall('m:si', ns):
+            shared.append(''.join(t.text or '' for t in si.iter('{%s}t' % ns['m'])))
+    sheets = sorted(n for n in zf.namelist() if re.fullmatch(r'xl/worksheets/sheet\d+\.xml', n))
+    rows = []
+    root = ET.fromstring(zf.read(sheets[0]))
+    for row in root.iter('{%s}row' % ns['m']):
+        cells = []
+        for c in row.findall('m:c', ns):
+            col = re.match(r'[A-Z]+', c.get('r', 'A')).group(0)
+            v = c.find('m:v', ns)
+            if c.get('t') == 's' and v is not None:
+                val = shared[int(v.text)]
+            elif c.get('t') == 'inlineStr':
+                val = ''.join(t.text or '' for t in c.iter('{%s}t' % ns['m']))
+            else:
+                val = v.text if v is not None else None
+            cells.append((col, val))
+        rows.append(cells)
+    return rows
+
+
+def section_names_from_xlsx(data, prefix='KC'):
+    """找「段代碼（4 位數）＋右邊一格是段名」的配對，回傳 {KC0308: '貓盂段貓盂小段'}"""
+    out = {}
+    for cells in read_xlsx_cells(data):
+        for k, (col, val) in enumerate(cells):
+            if val is None or k + 1 >= len(cells):
+                continue
+            v = str(val).strip()
+            if re.fullmatch(r'\d{3,4}(\.0)?', v):
+                name = str(cells[k + 1][1] or '').strip()
+                if name.endswith('段') or '小段' in name:
+                    out[prefix + v.split('.')[0].zfill(4)] = name
+    return out

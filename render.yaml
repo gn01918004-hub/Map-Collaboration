@@ -1,0 +1,21 @@
+# Render 一鍵部署設定（Blueprint）。說明見 README「放到 Render」。
+services:
+  - type: web
+    name: map-collaboration
+    runtime: python
+    plan: starter            # 免費方案不能掛硬碟，資料會不見，所以至少要 starter
+    region: singapore        # 離台灣最近
+    buildCommand: "echo no build needed"
+    startCommand: "python server/app.py"
+    healthCheckPath: /login
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATA_DIR
+        value: /var/data
+      - key: ACCESS_PASSWORD   # 大家共用的密碼，在 Render 網頁上填
+        sync: false
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1

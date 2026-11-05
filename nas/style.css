@@ -147,3 +147,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
 #connectBox h2 { margin: 0 0 8px; }
 #connectBox button { display: block; width: 100%; margin-top: 10px; font-size: 18px; padding: 14px; }
 #folderName { margin-bottom: 6px; word-break: break-all; }
+
+.req { color: var(--red); font-weight: normal; font-size: 14px; }
+.sym.case { background: rgba(232,115,12,.35); border: 2px solid var(--orange); }
+.sv { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #eee; flex-wrap: wrap; }
+.sv b { min-width: 70px; }
+.sv .code { background: #fde8e6; color: var(--red); border-radius: 6px; padding: 0 6px; font-weight: bold; }
+.sv button { font-size: 14px; padding: 4px 10px; }
+.reg { max-height: 320px; overflow: auto; font-size: 13px; }
+.reg table { border-collapse: collapse; width: 100%; }
+.reg td, .reg th { border-bottom: 1px solid #eee; padding: 3px 4px; text-align: left; white-space: nowrap; }
+.tl { border-left: 3px solid var(--orange); margin: 6px 0 2px 4px; padding-left: 8px; }
+.tl .it { margin: 4px 0; font-size: 13px; }
+.tl .it button { font-size: 12px; padding: 1px 6px; margin-left: 4px; }
+.tag.new { background: var(--green); } .tag.old { background: #667085; }
+.tag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 20px; color: #fff; background: #475467; vertical-align: middle; }

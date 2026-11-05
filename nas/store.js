@@ -133,7 +133,8 @@
   // ── 設定、底圖 ──
   function loadCfg() {
     return readJson('設定.json').catch(function () { return {}; }).then(function (c) {
-      S.cfg = Object.assign({ tolerance_cm: 2.0, section_names: {}, twd67_sections: null, abolished_sections: Core.ABOLISHED.slice() }, c);
+      S.cfg = Object.assign({ tolerance_cm: 2.0, section_names: {}, twd67_sections: null, abolished_sections: Core.ABOLISHED.slice(),
+        surveyors: [], case_types: ['保存登記', '鑑界', '分割'], dup_tol_cm: 2.0, ref_buffer_m: 50 }, c);
       S.names = Object.assign({}, DEFAULT_NAMES, S.cfg.section_names || {});
       return S.cfg;
     });
@@ -204,7 +205,7 @@
   }
 
   // ── 上傳紀錄 ──
-  function loadBatches() {
+  function loadBatches(withDeleted) {
     return listDirs('上傳').then(function (names) {
       return Promise.all(names.map(function (n) {
         var b = S.batches[n];
@@ -215,7 +216,7 @@
         });
       }));
     }).then(function (all) {
-      return all.filter(function (b) { return b && !b.deleted; }).sort(function (a, b) { return b.created - a.created; });
+      return all.filter(function (b) { return b && (withDeleted || !b.deleted); }).sort(function (a, b) { return b.created - a.created; });
     });
   }
   function tolM() { return (S.cfg.tolerance_cm || 2) / 100; }
@@ -231,29 +232,50 @@
           links.push(Object.assign({}, l, { surveyor: b.surveyor, created: b.created, batch_id: b.id, sll: Core.ll(l.sy, l.sx), tll: Core.ll(l.ty, l.tx), bll: l.by ? Core.ll(l.by, l.bx) : null }));
         });
       });
-      return { points: pts, used: Object.keys(used).map(function (k) { return used[k]; }), links: links,
-        batches: bs.map(function (b) { return { id: b.id, surveyor: b.surveyor, note: b.note, created: b.created, sections: b.sections.join(','), stats: b.stats }; }) };
+      return { points: pts, used: Object.keys(used).map(function (k) { return used[k]; }), links: links, history: Core.parcelHistory(bs),
+        surveyors: S.cfg.surveyors, case_types: S.cfg.case_types,
+        batches: bs.map(function (b) {
+          return { id: b.id, surveyor: b.surveyor, note: b.note, created: b.created, sections: (b.sections || []).join(','), stats: b.stats,
+            caseType: b.caseType || (b.import ? '匯入既有清冊' : ''), caseNo: b.caseNo || '',
+            parcels: (b.parcels || []).filter(function (p) { return p.found; }).map(function (p) { return p.parcel; }) };
+        }) };
     });
   }
   function stamp(d) { var p = function (n) { return (n < 10 ? '0' : '') + n; }; return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); }
+  function surveyorOf(name) { return (S.cfg.surveyors || []).filter(function (x) { return x.name === name; })[0]; }
+  function registryOf(name) {
+    var sv = surveyorOf(name);
+    return loadBatches(true).then(function (bs) { return Core.buildRegistry(bs, name, sv ? sv.code : ''); });
+  }
   function analyze(body) {
+    var sv = surveyorOf(body.surveyor);
+    if (!sv) return Promise.reject(new Error('請先選測量員（測量員要先在 ⚙ 管理 新增）'));
+    var pl = Core.parseParcelList(body.parcelsText);
     return Core.expandZips(body.files).then(function (files) {
-      var res = Core.parseFieldFiles(files);
-      return loadBatches().then(function (bs) {
-        var others = Core.latestPoints(bs, tolM()).filter(function (p) { return p.kind === '補點'; });
-        Core.analyzeUpload(res, { ctlByName: S.ctlByName, trans: S.trans, others: others, surveyor: body.surveyor, tol: tolM(), secName: secName });
-        res.expanded = files;
+      var res = Core.parseFieldFiles(files, { parcels: pl.parcels, refBuffer: S.cfg.ref_buffer_m || 50 });
+      if (pl.bad.length) res.report.push(['error', '看不懂的地號：' + pl.bad.join('、')]);
+      if (!pl.parcels.length) res.report.push(['error', '請填這次測量的地號']);
+      return loadBatches(true).then(function (all) {
+        var live = all.filter(function (b) { return !b.deleted; });
+        var others = Core.latestPoints(live, tolM()).filter(function (p) { return p.kind === '補點'; });
+        Core.analyzeUpload(res, { ctlByName: S.ctlByName, trans: S.trans, others: others, surveyor: sv.name, code: sv.code,
+          registry: Core.buildRegistry(all, sv.name, sv.code), tol: tolM(), dupTol: (S.cfg.dup_tol_cm || 2) / 100, secName: secName });
+        res.blocking = res.report.filter(function (r) { return r[0] === 'error'; }).length + (pl.parcels.length ? 0 : 1);
+        if (!body.caseType) { res.report.unshift(['error', '請選案件種類']); res.blocking++; }
+        res.code = sv.code;
         return res;
       });
     });
   }
   function upload(body) {
     return analyze(body).then(function (res) {
-      if (!res.points.length && !res.used.length && !res.links.length) { var e = new Error('這些檔案裡沒有可以用的資料'); throw e; }
+      if (res.blocking) throw new Error('還有紅色的問題要先處理（地號、案件種類…）');
       var created = Date.now() / 1000, safe = body.surveyor.replace(/[\\/:*?"<>|]/g, '_');
       var id = stamp(new Date()) + '_' + safe, dir = '上傳/' + id + '/';
       var keep = body.files.filter(function (f) { return Core.wanted(f.path); });
-      var rec = { surveyor: body.surveyor, note: body.note || '', created: created, sections: res.sections, stats: res.stats, report: res.report,
+      var rec = { version: 2, surveyor: body.surveyor, code: res.code, caseType: body.caseType, caseNo: body.caseNo || '', note: body.note || '',
+        created: created, sections: res.sections, stats: res.stats, report: res.report, maxNum: res.maxNum || 0,
+        parcels: res.parcels.map(function (p) { return { section: p.section, parcel: p.parcel, found: p.found, ring: p.ring || null }; }),
         points: res.points, used: res.used, links: res.links, files: keep.map(function (f) { return f.path; }) };
       var p = Promise.resolve();
       keep.forEach(function (f) {
@@ -265,6 +287,26 @@
         return { batch: id, stats: res.stats, report: res.report };
       });
     });
+  }
+  /** 匯入既有補點清冊（CSV：點名,Y,X[,段]，TWD97）→ 存成一次「匯入」上傳 */
+  function importRegistry(body) {
+    var sv = surveyorOf(body.surveyor);
+    if (!sv) return Promise.reject(new Error('找不到這位測量員'));
+    var re = new RegExp('^Q' + sv.code + '(\\d+)$', 'i'), pts = [], bad = [], maxNum = 0, seen = {};
+    Core.decode(body.bytes).split(/\r?\n/).forEach(function (l, i) {
+      var t = l.split(/[,\t]/).map(function (v) { return v.trim().replace(/^"|"$/g, ''); });
+      if (!t[0] || !Core.isNum(t[1]) || !Core.isNum(t[2])) { if (l.trim() && i > 0) bad.push(i + 1); return; }
+      var y = parseFloat(t[1]), x = parseFloat(t[2]);
+      if (Core.isX(t[1]) && Core.isY(t[2])) { var tmp = y; y = x; x = tmp; }
+      var m = re.exec(t[0]); if (m) maxNum = Math.max(maxNum, +m[1]);
+      if (seen[t[0].toUpperCase()]) return; seen[t[0].toUpperCase()] = 1;
+      pts.push({ section: t[3] ? (/^\d{4}$/.test(t[3]) ? 'KC' + t[3] : t[3].toUpperCase()) : '', kind: '補點', name: t[0], y: y, x: x, src: body.name || '匯入', reg: 'import' });
+    });
+    if (!pts.length) return Promise.reject(new Error('檔案裡沒有「點名,Y,X」的資料'));
+    var id = stamp(new Date()) + '_' + body.surveyor.replace(/[\\/:*?"<>|]/g, '_') + '_清冊匯入';
+    var rec = { version: 2, import: true, surveyor: sv.name, code: sv.code, caseType: '匯入既有清冊', note: body.name || '', created: Date.now() / 1000,
+      sections: [], stats: { '補點': pts.length }, report: [], maxNum: maxNum, parcels: [], points: pts, used: [], links: [], files: [] };
+    return writeJson('上傳/' + id + '/結果.json', rec).then(function () { rec.id = id; S.batches[id] = rec; return { ok: true, count: pts.length, bad: bad, maxNum: maxNum }; });
   }
   function batchZip(id) {
     return dirOf('上傳/' + id + '/原始檔').then(function (d) { return walk(d, '', null); }).then(function (files) { return Core.zipStore(files); });
@@ -287,9 +329,9 @@
       fd.points.filter(function (r) { return r.name.toUpperCase().indexOf(qu) === 0; }).slice(0, 50).forEach(function (r) {
         out.push({ type: r.kind, label: r.name + '（' + r.surveyor + '，' + secName(r.section) + '）', ll: r.ll, name: r.name, section: r.section });
       });
-      fd.batches.filter(function (b) { return b.surveyor.indexOf(q) >= 0; }).slice(0, 20).forEach(function (b) {
+      fd.batches.filter(function (b) { return b.surveyor.indexOf(q) >= 0 || (b.caseNo && b.caseNo.indexOf(q) >= 0); }).slice(0, 20).forEach(function (b) {
         var d = new Date(b.created * 1000);
-        out.push({ type: '上傳', label: b.surveyor + ' 的上傳（' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + ('0' + d.getMinutes()).slice(-2) + '，' + b.sections + '）', batch: b.id });
+        out.push({ type: '上傳', label: b.surveyor + (b.caseType ? ' ' + b.caseType : '') + (b.caseNo ? '（' + b.caseNo + '）' : '') + '，' + (d.getFullYear() - 1911) + '.' + (d.getMonth() + 1) + '.' + d.getDate() + '，' + b.parcels.join('、'), batch: b.id });
       });
       var n = 0;
       S.controls.some(function (c) {
@@ -309,8 +351,14 @@
     if (!S.data) return Promise.reject(new Error('還沒連接共用資料夾'));
     if (path === '/api/info') {
       return loadCfg().then(loadBase).then(function (idx) {
-        if (!idx) { var e = new Error('還沒有底圖'); e.data = { nobase: true }; throw e; }
-        return { datum: idx.datum, tolerance_cm: S.cfg.tolerance_cm, section_names: S.names, custom_names: S.cfg.section_names,
+        if (!idx) {
+          var e = new Error('還沒有底圖');
+          e.data = { nobase: true, cfg: { tolerance_cm: S.cfg.tolerance_cm, surveyors: S.cfg.surveyors, case_types: S.cfg.case_types, dup_tol_cm: S.cfg.dup_tol_cm,
+            ref_buffer_m: S.cfg.ref_buffer_m, section_names: S.names, abolished: S.cfg.abolished_sections } };
+          throw e;
+        }
+        return { datum: idx.datum, tolerance_cm: S.cfg.tolerance_cm, surveyors: S.cfg.surveyors, case_types: S.cfg.case_types,
+          dup_tol_cm: S.cfg.dup_tol_cm, ref_buffer_m: S.cfg.ref_buffer_m, section_names: S.names, custom_names: S.cfg.section_names,
           abolished: S.cfg.abolished_sections, sections: idx.sections, ctl: idx.ctl, built: idx.built };
       });
     }
@@ -331,8 +379,19 @@
     }
     if (path === '/api/preview') {
       return analyze(body).then(function (r) {
-        return { report: r.report, stats: r.stats, sections: r.sections, points: r.points,
+        return { report: r.report, stats: r.stats, sections: r.sections, points: r.points, parcels: r.parcels, blocking: r.blocking, code: r.code,
           used: r.used.filter(function (u) { return u.delta == null || u.delta > tolM(); }) };
+      });
+    }
+    if ((m = /^\/api\/registry\?surveyor=(.*)$/.exec(path))) return loadCfg().then(function () { return registryOf(decodeURIComponent(m[1])); });
+    if (path === '/api/registry/import') return loadCfg().then(function () { return importRegistry(body); });
+    if ((m = /^\/api\/registry\/export\?surveyor=(.*)$/.exec(path))) {
+      var who = decodeURIComponent(m[1]);
+      return loadCfg().then(function () { return registryOf(who); }).then(function (r) {
+        var rows = ['點名,Y(縱),X(橫),段,第一次登錄,案件種類,地號,重測系統原名'];
+        r.points.forEach(function (p) { rows.push([p.name, p.y.toFixed(3), p.x.toFixed(3), secName(p.section), new Date(p.created * 1000).toLocaleString(), p.caseType, p.parcels, p.orig_name].map(csvCell).join(',')); });
+        download('補點清冊_' + who + '.csv', '\ufeff' + rows.join('\r\n'), 'text/csv');
+        return { ok: true };
       });
     }
     if (path === '/api/upload') return upload(body);
@@ -342,6 +401,10 @@
         if (Array.isArray(body.abolished_sections)) { S.cfg.abolished_sections = body.abolished_sections; rebuild = true; }
         if ('twd67_sections' in body) { S.cfg.twd67_sections = body.twd67_sections; rebuild = true; }
         if ('tolerance_cm' in body) S.cfg.tolerance_cm = body.tolerance_cm;
+        if (Array.isArray(body.surveyors)) S.cfg.surveyors = body.surveyors;
+        if (Array.isArray(body.case_types)) S.cfg.case_types = body.case_types;
+        if ('dup_tol_cm' in body) S.cfg.dup_tol_cm = body.dup_tol_cm;
+        if ('ref_buffer_m' in body) S.cfg.ref_buffer_m = body.ref_buffer_m;
         if (body.section_names) {
           var c = {};
           Object.keys(body.section_names).forEach(function (k) { if (body.section_names[k] && DEFAULT_NAMES[k] !== body.section_names[k]) c[k] = body.section_names[k]; });

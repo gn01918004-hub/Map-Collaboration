@@ -27,12 +27,23 @@
       <div class="step" id="u1">
         <div class="num">1</div>
         <div class="body">
-          <label>你的名字</label>
-          <input id="who" placeholder="例如：王小明" autocomplete="name">
+          <label>測量員</label>
+          <select id="who"></select>
+          <div id="whoHint" class="small"></div>
         </div>
       </div>
       <div class="step" id="u2">
         <div class="num">2</div>
+        <div class="body">
+          <label>案件種類</label>
+          <select id="caseType"></select>
+          <label>這次測量的地號 <span class="req">（必填）</span></label>
+          <textarea id="parcelsText" rows="2" placeholder="例如：123、124-1、125之2（不同段：1114 123、1113 45）"></textarea>
+          <input id="caseNo" placeholder="收件號（可不填），例如：苑土測字第 001234 號">
+        </div>
+      </div>
+      <div class="step" id="u3a">
+        <div class="num">3</div>
         <div class="body">
           <label>把重測系統的資料夾（例如 KC1114）或 zip 拖到下面框框</label>
           <div id="drop">
@@ -45,11 +56,11 @@
             <input type="file" id="fileInput" multiple hidden>
           </div>
           <div id="picked"></div>
-          <input id="note" placeholder="備註（可不填），例如：113.04.16 協助指界">
+          <input id="note" placeholder="備註（可不填）">
         </div>
       </div>
       <div class="step hidden" id="u3">
-        <div class="num">3</div>
+        <div class="num">4</div>
         <div class="body">
           <label>系統看到的內容</label>
           <div id="preview"></div>
@@ -60,15 +71,13 @@
         </div>
       </div>
       <details class="help">
-        <summary>要放哪些檔案？</summary>
-        <p>整個資料夾丟進來就好，系統會自己挑：</p>
+        <summary>系統會讀什麼？</summary>
         <ul>
-          <li><b>KCxxxx.D20</b>：補點（Q 開頭）</li>
-          <li><b>KCxxxx.D14</b>：參考點（編碼不是 00 的點）</li>
-          <li><b>KCxxxx.L02</b>、儀器 <b>.CSV</b>：這次用到的圖根點（會跟圖根點檔比對）</li>
-          <li><b>.B90</b>：協助指界計算（測站 → 補點的連線）</li>
+          <li><b>D13 + D14</b>：只讀你填的那幾筆土地的界址點，畫出這次的宗地範圍；參考點只取這幾筆土地附近的。</li>
+          <li><b>D20</b>：全部補點。跟你的<b>補點清冊</b>比坐標，已經有的不重複加；新的自動編成 Q + 你的補點代碼 + 下一個號碼（例如 QW58）。</li>
+          <li><b>L02、儀器 CSV、B90</b>：這次用到的圖根點（跟圖根點檔比對）、設站連線。</li>
         </ul>
-        <p>同一個人、同一段再上傳一次，新的會蓋掉舊的（舊的紀錄還在「誰上傳了什麼」）。</p>
+        <p>要放整個資料夾（D13、D14、D20 都要在裡面）。</p>
       </details>
     </section>
 
@@ -97,6 +106,18 @@
     <section id="p-admin" class="panel">
       <h2>⚙ 管理</h2>
       <div class="card"><h3>共用資料夾</h3><div id="folderName" class="small"></div><button id="switchFolder" class="ghost">換資料夾</button></div>
+      <div class="card">
+        <h3>測量員</h3>
+        <div id="svList"></div>
+        <div class="row">
+          <input id="svName" placeholder="名字，例如：林威帆" style="flex:2">
+          <input id="svCode" placeholder="補點代碼，例如：W" style="flex:1" maxlength="3">
+          <button id="svAdd" class="go">新增</button>
+        </div>
+        <div class="small">補點會編成 Q + 補點代碼 + 流水號（代碼 W → QW1、QW2…）。代碼不能重複。</div>
+        <input type="file" id="regInput" accept=".csv,.txt" hidden>
+        <div id="regView"></div>
+      </div>
       <div id="baseInfo" class="card"></div>
       <div class="card">
         <h3>更新數值地籍圖</h3>
@@ -125,6 +146,12 @@
         <h3>設定</h3>
         <label>坐標差多少算「不符」（公分）</label>
         <input id="tol" type="number" step="0.5" min="0.5">
+        <label>案件種類（一行一個）</label>
+        <textarea id="caseTypes" rows="3"></textarea>
+        <label>補點坐標差多少以內算「同一點」（公分）</label>
+        <input id="dupTol" type="number" step="0.5" min="0.1">
+        <label>參考點：取宗地界址點多少公尺內的（公尺）</label>
+        <input id="refBuf" type="number" step="5" min="5">
         <label>段名（一行一個，例如 KC1114=水尾段）</label>
         <textarea id="secNames" rows="5"></textarea>
         <div class="row">
@@ -167,6 +194,7 @@
       <label><input type="checkbox" data-layer="ctl" checked> <span class="sym dot"></span> 圖根點</label>
       <label><input type="checkbox" data-layer="bad" checked> <span class="sym warn">!</span> 坐標不符</label>
       <label><input type="checkbox" data-layer="links" checked> <span class="sym line"></span> 設站連線</label>
+      <label><input type="checkbox" data-layer="cases" checked> <span class="sym case"></span> 有案件的土地</label>
       <label><input type="checkbox" data-layer="parcel" checked> <span class="sym par"></span> 地籍線</label>
       <div class="lsep"></div>
       <select id="baseLayer">

@@ -773,11 +773,41 @@
   function isBoundaryName(n) { return /^\d+(\.\d+)?$/.test(n); }
   function refName(num, ref) { return parseInt(num, 10) + '.' + ('0' + parseInt(ref, 10)).slice(-2); }
 
-  var WANT = /\.(d14|d20|l02|l14|l20|b9\d|csv|txt|zip)$/i;
+  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|zip)$/i;
   function wanted(p) { return WANT.test(p); }
 
-  /** 重測系統上傳檔 → 補點、參考點、用到的圖根點、設站。files：[{path, bytes}]（zip 已展開） */
-  function parseFieldFiles(files) {
+  /** 「123, 124-1」「1114 123、1114 124之2」→ [{section: 'KC1114'|null, key: '123'}]；看不懂的放 bad */
+  function parseParcelList(text) {
+    var out = [], bad = [], seen = {};
+    var push = function (sec, key) { var k = (sec || '') + '|' + key; if (!seen[k]) { seen[k] = 1; out.push({ section: sec, key: key }); } };
+    String(text || '').split(/[,，、;；\n]+/).forEach(function (part) {
+      part = part.trim(); if (!part) return;
+      var m = /^(?:(?:[A-Za-z]{2})?(\d{4})\s*(?:段|:|：|\s)\s*)?0*(\d+)\s*(?:[-之]\s*0*(\d+))?\s*(?:地號)?$/.exec(part);
+      if (m) { push(m[1] ? 'KC' + m[1] : null, parcelLabel(m[2], m[3] || '0')); return; }
+      part.split(/\s+/).forEach(function (t) { var k = parcelKeyOf(t); if (k) push(null, k); else bad.push(t); });
+    });
+    return { parcels: out, bad: bad };
+  }
+
+  /** D13：地號 → 界址點號（依序） */
+  function parseD13(db) {
+    var out = {};
+    db.records.forEach(function (r) {
+      if (!/^\d+$/.test(r.O_PARCEL || '')) return;
+      var k = parcelLabel(r.O_PARCEL, r.O_PARCEL_E || '0'), a = out[k] = out[k] || [];
+      for (var i = 1; i <= 8; i++) { var v = r['COORD_' + i]; if (/^\d+$/.test(v || '') && +v) a.push(String(+v)); }
+    });
+    return out;
+  }
+
+  /**
+   * 重測系統上傳檔 → 補點、參考點、宗地、用到的圖根點、設站。files：[{path, bytes}]（zip 已展開）
+   * opts.parcels：[{section, key}] 這次測量的地號 → 只讀這幾筆土地（D13 找界址點、D14 取坐標，參考點取這幾筆附近的）
+   * opts.refBuffer：參考點範圍（公尺，預設 50）
+   */
+  function parseFieldFiles(files, opts) {
+    opts = opts || {};
+    var want = opts.parcels && opts.parcels.length ? opts.parcels : null, buf = opts.refBuffer || 50;
     var report = [], groups = {}, skipped = [];
     files.forEach(function (f) {
       if (!wanted(f.path)) { skipped.push(f.path); return; }
@@ -788,11 +818,11 @@
     var known = Object.keys(groups).filter(function (k) { return k !== '未知段'; });
     if (groups['未知段'] && known.length === 1) { groups[known[0]] = groups[known[0]].concat(groups['未知段']); delete groups['未知段']; }
     if (skipped.length) report.push(['info', '有 ' + skipped.length + ' 個檔案用不到，已略過（例如 ' + skipped.slice(0, 3).map(fileName).join('、') + '）']);
-    var points = [], links = [], used = [];
+    var points = [], links = [], used = [], secData = {};
     Object.keys(groups).sort().forEach(function (sec) {
       var byExt = {};
       groups[sec].forEach(function (f) { var e = extName(f.path); (byExt[e] = byExt[e] || []).push(f); });
-      var secPts = {}, order = [];
+      var secPts = {}, order = [], sd = secData[sec] = { d13: null, bnd: {}, refs: [], hasD14: !!byExt.D14 };
       var add = function (kind, name, y, x, src, extra) {
         var k = kind + '|' + name.toUpperCase(), old = secPts[k];
         if (old) {
@@ -804,6 +834,7 @@
         if (extra) Object.keys(extra).forEach(function (q) { p[q] = extra[q]; });
         secPts[k] = p; order.push(k);
       };
+      sd.add = add;
       var dbf = function (f, need, label) {
         try { var db = parseDbf(f.bytes); } catch (e) { report.push(['error', f.path + ' 讀不出來：' + e.message]); return null; }
         if (db.fields.indexOf(need) < 0) { report.push(['error', f.path + ' 不是重測系統的 ' + label + '（欄位不對）']); return null; }
@@ -813,18 +844,19 @@
         var db = dbf(f, 'CTL_NAME', 'D20'); if (!db) return;
         db.records.forEach(function (r) { if (r.CTL_NAME && isNum(r.CTL_Y) && isNum(r.CTL_X)) add('補點', r.CTL_NAME, parseFloat(r.CTL_Y), parseFloat(r.CTL_X), f.path, { level: r.CTL_LEVEL || '' }); });
       });
+      (byExt.D13 || []).forEach(function (f) { var db = dbf(f, 'COORD_1', 'D13'); if (db) sd.d13 = parseD13(db); });
       (byExt.D14 || []).forEach(function (f) {
         var db = dbf(f, 'COT_REF', 'D14'); if (!db) return;
-        var n = 0;
         db.records.forEach(function (r) {
-          var ref = /^\d+$/.test(r.COT_REF) ? parseInt(r.COT_REF, 10) : 0;
-          if (!ref || !/^\d+$/.test(r.COT_NUMBER) || !isNum(r.COT_Y)) return;
-          n++; add('參考點', refName(r.COT_NUMBER, ref), parseFloat(r.COT_Y), parseFloat(r.COT_X), f.path, { remark: r.COT_REMARK || '' });
+          if (!/^\d+$/.test(r.COT_NUMBER) || !isNum(r.COT_Y)) return;
+          var ref = /^\d+$/.test(r.COT_REF) ? parseInt(r.COT_REF, 10) : 0, y = parseFloat(r.COT_Y), x = parseFloat(r.COT_X);
+          if (!ref) sd.bnd[String(+r.COT_NUMBER)] = [y, x];
+          else sd.refs.push({ num: String(+r.COT_NUMBER), name: refName(r.COT_NUMBER, ref), y: y, x: x, src: f.path, remark: r.COT_REMARK || '' });
         });
-        report.push(['info', sec + ' 的 D14 有 ' + db.records.length + ' 筆資料，其中參考點 ' + n + ' 點']);
+        if (!want) { sd.refs.forEach(function (q) { add('參考點', q.name, q.y, q.x, q.src, { remark: q.remark }); }); report.push(['info', sec + ' 的 D14 有 ' + db.records.length + ' 筆資料，其中參考點 ' + sd.refs.length + ' 點']); }
       });
       if (!byExt.D20) (byExt.L20 || []).forEach(function (f) { parseL(decode(f.bytes)).forEach(function (p) { add('補點', p.name, p.y, p.x, f.path); }); });
-      if (!byExt.D14) (byExt.L14 || []).forEach(function (f) {
+      if (!byExt.D14 && !want) (byExt.L14 || []).forEach(function (f) {
         parseL(decode(f.bytes)).forEach(function (p) { var m = /^(\d+)\.(\d+)$/.exec(p.name); if (m && parseInt(m[2], 10)) add('參考點', refName(m[1], m[2]), p.y, p.x, f.path); });
       });
       var secUsed = {}, usedOrder = [];
@@ -849,23 +881,79 @@
       (byExt.CSV || []).concat((byExt.TXT || []).filter(function (f) { return !looksLikeB90(decode(f.bytes)); })).forEach(function (f) {
         parseCsvPoints(decode(f.bytes)).forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'CSV 儀器檔'); });
       });
-      usedOrder = usedOrder.filter(function (k) { return !secPts['補點|' + k]; });
-      var pts = order.map(function (k) { return secPts[k]; });
-      points = points.concat(pts);
-      used = used.concat(usedOrder.map(function (k) { return secUsed[k]; }));
-      var cnt = {}; pts.forEach(function (p) { cnt[p.kind] = (cnt[p.kind] || 0) + 1; });
-      report.push(['ok', sec + '：' + (Object.keys(cnt).sort().map(function (k) { return k + ' ' + cnt[k] + ' 點'; }).join('、') || '沒有補點或參考點') + '，用到圖根點 ' + usedOrder.length + ' 點']);
+      sd.finish = function () {
+        usedOrder = usedOrder.filter(function (k) { return !secPts['補點|' + k]; });
+        var pts = order.map(function (k) { return secPts[k]; });
+        points = points.concat(pts);
+        used = used.concat(usedOrder.map(function (k) { return secUsed[k]; }));
+        var cnt = {}; pts.forEach(function (p) { cnt[p.kind] = (cnt[p.kind] || 0) + 1; });
+        report.push(['ok', sec + '：' + (Object.keys(cnt).sort().map(function (k) { return k + ' ' + cnt[k] + ' 點'; }).join('、') || '沒有補點或參考點') + '，用到圖根點 ' + usedOrder.length + ' 點']);
+      };
     });
-    if (!Object.keys(groups).length) report.push(['error', '找不到重測系統的資料（需要 KCxxxx.D20、D14、L02 或 B90 等檔案）']);
-    return { points: points, links: links, used: used, report: report, sections: Object.keys(groups).sort() };
+
+    // 這次測量的地號：D13 找界址點、D14 取坐標、附近的參考點
+    var parcels = [];
+    if (want) {
+      want.forEach(function (w) {
+        var cands = Object.keys(secData).filter(function (s) { return (!w.section || s === w.section) && secData[s].d13 && secData[s].d13[w.key]; });
+        var label = (w.section ? w.section + ' ' : '') + w.key + ' 地號';
+        if (!cands.length) {
+          var noD13 = Object.keys(secData).filter(function (s) { return !secData[s].d13; });
+          report.push(['error', label + '：' + (noD13.length && noD13.length === Object.keys(secData).length ? '上傳的資料裡沒有 D13（地號的界址點表），請把整個資料夾放進來' : '在 D13 裡找不到這筆土地，請確認地號')]);
+          parcels.push({ section: w.section, parcel: w.key, found: false });
+          return;
+        }
+        if (cands.length > 1) { report.push(['error', label + '：好幾段都有這個地號（' + cands.join('、') + '），請寫成「段號 地號」，例如 ' + cands[0].slice(2) + ' ' + w.key]); parcels.push({ section: null, parcel: w.key, found: false }); return; }
+        var sec = cands[0], sd = secData[sec], nums = sd.d13[w.key], ring = [], miss = 0;
+        nums.forEach(function (n) { var c = sd.bnd[n]; if (c) ring.push([c[0], c[1], n]); else miss++; });
+        if (!sd.hasD14) report.push(['error', label + '：沒有 D14（界址點坐標）']);
+        else if (miss) report.push(['warn', label + '：有 ' + miss + ' 個界址點在 D14 裡找不到坐標']);
+        parcels.push({ section: sec, parcel: w.key, found: ring.length >= 3, ring: ring, points: nums.length });
+        if (ring.length >= 3) report.push(['ok', sec + ' ' + w.key + ' 地號：' + nums.length + ' 個界址點']);
+      });
+      // 參考點：點號跟這幾筆的界址點一樣，或在界址點 buf 公尺內
+      Object.keys(secData).forEach(function (sec) {
+        var sd = secData[sec], mine = parcels.filter(function (p) { return p.section === sec && p.found; });
+        if (!mine.length) return;
+        var numSet = {}, verts = [];
+        mine.forEach(function (p) { p.ring.forEach(function (c) { numSet[c[2]] = 1; verts.push(c); }); });
+        var n = 0;
+        sd.refs.forEach(function (q) {
+          var near = numSet[q.num] || verts.some(function (c) { return Math.abs(c[0] - q.y) < buf && Math.abs(c[1] - q.x) < buf && hypot(c[0] - q.y, c[1] - q.x) <= buf; });
+          if (near) { n++; sd.add('參考點', q.name, q.y, q.x, q.src, { remark: q.remark }); }
+        });
+        report.push(['info', sec + '：這幾筆土地附近（' + buf + ' 公尺內）的參考點 ' + n + ' 點（D14 全部有 ' + sd.refs.length + ' 點參考點）']);
+      });
+    }
+    Object.keys(secData).sort().forEach(function (s) { secData[s].finish(); });
+    if (!Object.keys(groups).length) report.push(['error', '找不到重測系統的資料（需要 KCxxxx.D20、D14、D13、L02 或 B90 等檔案）']);
+    return { points: points, links: links, used: used, parcels: parcels, report: report, sections: Object.keys(groups).sort() };
+  }
+
+  /** 補點清冊：某位測量員全部上傳（不含已刪除）的補點；最大編號連已刪除的也算，號碼不會重複用 */
+  function buildRegistry(batches, surveyor, code) {
+    var re = new RegExp('^Q' + code + '(\\d+)$', 'i'), maxNum = 0, seen = {}, pts = [];
+    batches.slice().sort(function (a, b) { return a.created - b.created; }).forEach(function (b) {
+      if (b.surveyor !== surveyor) return;
+      (b.points || []).forEach(function (p) {
+        if (p.kind !== '補點') return;
+        var m = re.exec(p.name); if (m) maxNum = Math.max(maxNum, +m[1]);
+        if (b.deleted || seen[p.name.toUpperCase()]) return;
+        seen[p.name.toUpperCase()] = 1;
+        pts.push({ name: p.name, y: p.y, x: p.x, section: p.section, orig_name: p.orig_name || '', created: b.created, batch: b.id,
+          caseType: b.caseType || (b.import ? '匯入既有清冊' : ''), parcels: (b.parcels || []).filter(function (q) { return q.found !== false; }).map(function (q) { return q.parcel; }).join('、') });
+      });
+      if (b.maxNum && b.code === code) maxNum = Math.max(maxNum, b.maxNum);
+    });
+    return { points: pts, maxNum: maxNum };
   }
 
   /**
-   * 解析後的上傳資料 → 比對圖根點、67 段換 97、跟別人的補點比對。
-   * ctx：{ ctlByName: {名稱大寫: [點…]}, trans: {段: Transform}, others: [別人的最新補點(97)], surveyor, tol(公尺), secName: fn }
+   * 解析後的上傳資料 → 比對圖根點、67 段換 97、補點編號（比對清冊）、跟別人的補點比對。
+   * ctx：{ ctlByName, trans, others, surveyor, code, registry:{points,maxNum}, tol(公尺), dupTol(公尺), secName }
    */
   function analyzeUpload(res, ctx) {
-    var tol = ctx.tol || 0.02, report = res.report.slice(), bad = 0, secName = ctx.secName || function (s) { return s; };
+    var tol = ctx.tol || 0.02, dupTol = ctx.dupTol || 0.02, report = res.report.slice(), bad = 0, secName = ctx.secName || function (s) { return s; };
     res.used.forEach(function (u) {
       var best = null;
       (ctx.ctlByName[u.name.toUpperCase()] || []).forEach(function (p) {
@@ -891,29 +979,63 @@
       q = to97(l.section, l.ty, l.tx); l.ty = q[0]; l.tx = q[1];
       if (l.by) { q = to97(l.section, l.by, l.bx); l.by = q[0]; l.bx = q[1]; }
     });
+    (res.parcels || []).forEach(function (p) {
+      if (!p.ring) return;
+      if (ctx.trans[p.section]) { conv[p.section] = 1; p.ring = p.ring.map(function (c) { var q = to97(p.section, c[0], c[1]); return [q[0], q[1], c[2]]; }); }
+    });
     var cs = Object.keys(conv).sort();
     if (cs.length) report.push(['info', cs.map(secName).join('、') + ' 是 TWD67 的段，坐標已換成 TWD97 顯示（' + ctx.trans[cs[0]].describe() + '）']);
+
+    // 補點編號：Q + 補點代碼 + 流水號；坐標跟清冊裡的點一樣（dupTol 內）就用原本的名字，不重複加
+    var nNew = 0, nOld = 0;
+    if (ctx.code) {
+      var reg = (ctx.registry && ctx.registry.points) || [], next = (ctx.registry && ctx.registry.maxNum) || 0, fresh = [], map = {}, keep = [];
+      res.points.forEach(function (p) {
+        if (p.kind !== '補點') { keep.push(p); return; }
+        var orig = p.name, hit = null, hd = Infinity;
+        reg.forEach(function (r) { var d = hypot(r.y - p.y, r.x - p.x); if (d <= dupTol && d < hd) { hit = r; hd = d; } });
+        if (hit) {
+          p.orig_name = orig; p.name = hit.name; p.reg = 'existing'; nOld++;
+          var when = new Date(hit.created * 1000);
+          report.push(['info', '補點 ' + orig + '：跟清冊裡的 ' + hit.name + ' 是同一點（差 ' + fmtDist(hd) + '，' + (when.getFullYear() - 1911) + '.' + (when.getMonth() + 1) + '.' + when.getDate() + ' 登錄），不重複加入']);
+        } else {
+          var dup = fresh.filter(function (f) { return hypot(f.y - p.y, f.x - p.x) <= dupTol; })[0];
+          if (dup) { map[orig.toUpperCase()] = dup.name; report.push(['info', '補點 ' + orig + ' 跟這次的 ' + dup.orig_name + ' 同一點，合併成 ' + dup.name]); return; }
+          next++; p.orig_name = orig; p.name = 'Q' + ctx.code + next; p.reg = 'new'; nNew++; fresh.push(p);
+          report.push(['ok', '補點 ' + orig + ' → 新編 ' + p.name]);
+        }
+        map[orig.toUpperCase()] = p.name;
+        if (keep.some(function (k) { return k.kind === '補點' && k.name === p.name; })) return;
+        keep.push(p);
+      });
+      res.points = keep;
+      res.maxNum = next;
+      res.links.forEach(function (l) {
+        ['station', 'back', 'target'].forEach(function (f) { var v = map[String(l[f]).toUpperCase()]; if (v) { l[f + '_orig'] = l[f]; l[f] = v; } });
+      });
+      res.used.forEach(function (u) { var v = map[u.name.toUpperCase()]; if (v) { u.orig_name = u.name; u.name = v; } });
+    }
     res.points.forEach(function (p) {
       if (p.kind !== '補點') return;
       (ctx.others || []).forEach(function (o) {
         if (o.surveyor === ctx.surveyor) return;
         var d = hypot(o.y - p.y, o.x - p.x);
-        if (o.name.toUpperCase() === p.name.toUpperCase() && o.section === p.section && d > tol) report.push(['warn', '補點「' + p.name + '」' + o.surveyor + ' 也有上傳，但坐標差 ' + fmtDist(d) + '，請兩位確認']);
-        else if (o.name.toUpperCase() !== p.name.toUpperCase() && d <= tol) report.push(['info', '補點「' + p.name + '」跟 ' + o.surveyor + ' 的補點「' + o.name + '」幾乎同一位置（' + fmtDist(d) + '），可能是同一點']);
+        if (d <= dupTol) report.push(['info', '補點 ' + p.name + ' 跟 ' + o.surveyor + ' 的補點 ' + o.name + ' 幾乎同一位置（' + fmtDist(d) + '），可能是同一點']);
       });
     });
     res.report = report;
-    res.stats = { '補點': res.points.filter(function (p) { return p.kind === '補點'; }).length, '參考點': res.points.filter(function (p) { return p.kind === '參考點'; }).length,
+    res.stats = { '補點': res.points.filter(function (p) { return p.kind === '補點'; }).length, '新補點': nNew, '既有補點': nOld,
+      '參考點': res.points.filter(function (p) { return p.kind === '參考點'; }).length, '宗地': (res.parcels || []).filter(function (p) { return p.found; }).length,
       '圖根點': res.used.length, '圖根點不符': bad, '設站': res.links.length };
     return res;
   }
 
-  /** 每人、每段、每種點、每個點名只留最新一次上傳；並標出不同人同一點的差異 */
+  /** 補點：每人每個點名只留最新一筆；參考點：每人、每段、每個點名 */
   function latestPoints(batches, tol) {
     var best = {};
     batches.forEach(function (b) {
       (b.points || []).forEach(function (p) {
-        var k = b.surveyor + '|' + p.section + '|' + p.kind + '|' + p.name.toUpperCase();
+        var k = b.surveyor + '|' + (p.kind === '補點' ? '' : p.section) + '|' + p.kind + '|' + p.name.toUpperCase();
         if (!best[k] || best[k].created < b.created) best[k] = Object.assign({}, p, { surveyor: b.surveyor, created: b.created, batch_id: b.id });
       });
     });
@@ -929,6 +1051,21 @@
     return pts;
   }
 
+  /** 每筆土地的案件時間軸：{ '段|地號': [{batch, created, surveyor, caseType, caseNo, note, ring(經緯度)}…]（舊到新） } */
+  function parcelHistory(batches) {
+    var h = {};
+    batches.forEach(function (b) {
+      (b.parcels || []).forEach(function (p) {
+        if (!p.found || !p.ring) return;
+        var k = p.section + '|' + p.parcel;
+        (h[k] = h[k] || []).push({ batch: b.id, created: b.created, surveyor: b.surveyor, caseType: b.caseType || '', caseNo: b.caseNo || '', note: b.note || '',
+          section: p.section, parcel: p.parcel, ring: p.ring.map(function (c) { return ll(c[0], c[1]); }).filter(Boolean), ring97: p.ring });
+      });
+    });
+    Object.keys(h).forEach(function (k) { h[k].sort(function (a, b) { return a.created - b.created; }); });
+    return h;
+  }
+
   return {
     decode: decode, isNum: isNum, isY: isY, isX: isX, coordStatus: coordStatus, baseName: baseName, extName: extName, fileName: fileName,
     sectionOf: sectionOf, unzip: unzip, expandZips: expandZips, zipStore: zipStore, crc32: crc32,
@@ -937,6 +1074,7 @@
     cleanControls: cleanControls, groupBaseFiles: groupBaseFiles, buildBase: buildBase, exportCtl: exportCtl, sectionNamesFromXlsx: sectionNamesFromXlsx,
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
+    parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED
   };
 });

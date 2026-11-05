@@ -62,6 +62,38 @@ function dbf(fields, rows) {
   const tr = Core.buildTransforms(det, ['KC0003']).trans.KC0003, q = tr.apply(inv[10][0], inv[10][1]);
   assert.ok(Math.hypot(q[0] - edge[10][0], q[1] - edge[10][1]) < 0.02);
 
+  // 地號清單
+  const pl = Core.parseParcelList('123、124-1, 125之2\n1114 45');
+  assert.deepStrictEqual(pl.parcels, [{ section: null, key: '123' }, { section: null, key: '124-1' }, { section: null, key: '125-2' }, { section: 'KC1114', key: '45' }]);
+
+  // 只讀選的地號：D13 → D14 界址點，參考點取附近的；補點照清冊編號
+  const d13 = dbf([['O_SECTION', 'N', 4], ['O_PARCEL', 'N', 4], ['O_PARCEL_E', 'N', 4], ['COORD_1', 'N', 5], ['COORD_2', 'N', 5], ['COORD_3', 'N', 5], ['COORD_4', 'N', 5]],
+    [{ O_SECTION: 1114, O_PARCEL: 10, O_PARCEL_E: 0, COORD_1: 1, COORD_2: 2, COORD_3: 3, COORD_4: 0 }, { O_SECTION: 1114, O_PARCEL: 11, O_PARCEL_E: 0, COORD_1: 7, COORD_2: 8, COORD_3: 9, COORD_4: 0 }]);
+  const d14b = dbf([['COT_NUMBER', 'N', 5], ['COT_REF', 'N', 2], ['COT_Y', 'N', 16], ['COT_X', 'N', 15]], [
+    { COT_NUMBER: 1, COT_REF: 0, COT_Y: '2704000.000', COT_X: '218000.000' }, { COT_NUMBER: 2, COT_REF: 0, COT_Y: '2704010.000', COT_X: '218000.000' },
+    { COT_NUMBER: 3, COT_REF: 0, COT_Y: '2704010.000', COT_X: '218010.000' }, { COT_NUMBER: 40, COT_REF: 30, COT_Y: '2704020.000', COT_X: '218005.000' },
+    { COT_NUMBER: 41, COT_REF: 30, COT_Y: '2705000.000', COT_X: '218005.000' }]);
+  const d20b = dbf([['CTL_NAME', 'C', 8], ['CTL_Y', 'N', 12], ['CTL_X', 'N', 11], ['CTL_LEVEL', 'C', 3]], [
+    { CTL_NAME: 'Q1', CTL_Y: '2704050.000', CTL_X: '218050.000', CTL_LEVEL: 'Q' }, { CTL_NAME: 'Q2', CTL_Y: '2704060.000', CTL_X: '218060.000', CTL_LEVEL: 'Q' }]);
+  const f2 = [{ path: 'KC1114/KC1114.D13', bytes: d13 }, { path: 'KC1114/KC1114.D14', bytes: d14b }, { path: 'KC1114/KC1114.D20', bytes: d20b }];
+  const r2 = Core.parseFieldFiles(f2, { parcels: [{ section: null, key: '10' }, { section: null, key: '99' }], refBuffer: 50 });
+  assert.strictEqual(r2.parcels[0].found, true); assert.strictEqual(r2.parcels[0].ring.length, 3);
+  assert.strictEqual(r2.parcels[1].found, false);
+  assert.deepStrictEqual(r2.points.filter(p => p.kind === '參考點').map(p => p.name), ['40.30']);   // 41.30 太遠
+  const reg = { points: [{ name: 'QW5', y: 2704050.001, x: 218050.0, created: 0 }], maxNum: 57 };
+  const a2 = Core.analyzeUpload(r2, { ctlByName: {}, trans: {}, others: [], surveyor: '林威帆', code: 'W', registry: reg, tol: 0.02, dupTol: 0.02 });
+  assert.deepStrictEqual(a2.points.filter(p => p.kind === '補點').map(p => [p.name, p.orig_name, p.reg]), [['QW5', 'Q1', 'existing'], ['QW58', 'Q2', 'new']]);
+  assert.strictEqual(a2.maxNum, 58);
+  // 清冊：刪除的上傳不算點，但號碼不重用
+  const bs = [{ id: 'a', surveyor: '林威帆', code: 'W', created: 1, points: [{ kind: '補點', name: 'QW1', y: 1, x: 1 }] },
+    { id: 'b', surveyor: '林威帆', code: 'W', created: 2, deleted: true, points: [{ kind: '補點', name: 'QW2', y: 2, x: 2 }] }];
+  const rg = Core.buildRegistry(bs, '林威帆', 'W');
+  assert.deepStrictEqual([rg.points.map(p => p.name), rg.maxNum], [['QW1'], 2]);
+  // 時間軸
+  const h = Core.parcelHistory([{ id: 'x', surveyor: 'A', created: 5, caseType: '鑑界', parcels: [{ section: 'KC1114', parcel: '10', found: true, ring: [[2704000, 218000], [2704010, 218000], [2704010, 218010]] }] },
+    { id: 'y', surveyor: 'B', created: 3, caseType: '分割', parcels: [{ section: 'KC1114', parcel: '10', found: true, ring: [[2704000, 218000], [2704010, 218000], [2704010, 218010]] }] }]);
+  assert.deepStrictEqual(h['KC1114|10'].map(e => e.caseType), ['分割', '鑑界']);
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

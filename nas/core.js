@@ -382,6 +382,46 @@
     }
     return null;
   }
+  /** 一個參數檔可能給好幾段用：資料夾「378、379、380」或檔名「KC0378_KC0379_KC0380.inp」→ 三段 */
+  function sectionsFromPath(path) {
+    var parts = String(path).replace(/\\/g, '/').split('/').filter(Boolean);
+    var own = sectionFromName(parts[parts.length - 1]);
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var b = i === parts.length - 1 ? baseName(parts[i]) : parts[i];
+      var nums = b.split(/[、,，_\-\s和及~～]+/).filter(function (t) { return /^(?:KC)?\d{3,4}$/i.test(t); })
+        .map(function (t) { return 'KC' + ('0000' + t.replace(/^KC/i, '')).slice(-4); });
+      if (nums.length >= 2 && (!own || nums.indexOf(own) >= 0)) return uniq(nums).sort();
+    }
+    var one = sectionFromName(path);
+    return one ? [one] : [];
+  }
+  /**
+   * zip 裡常有好幾份 .inp（最上層的工作檔、計算成果\日期\ 的正式版、加經緯度的版本）。
+   * 選法：同一組段裡，有 .out 一起的（真的算過）＞日期新的＞其他；檔名有「經緯度」的不用。
+   * 回傳 [{ sections, path, text, pts, alternatives:[{path, n, added, removed}] }]
+   */
+  function pickParamFiles(files) {
+    var dirs = {};
+    files.forEach(function (f) { var d = f.path.replace(/\\/g, '/').replace(/[^/]*$/, ''); (dirs[d] = dirs[d] || []).push(extName(f.path)); });
+    var groups = {};
+    files.filter(function (f) { return /\.inp$/i.test(f.path) && !/經緯/.test(fileName(f.path)); }).forEach(function (f) {
+      var secs = sectionsFromPath(f.path), text = decode(f.bytes), pts = parseParamInp(text);
+      if (!secs.length || !pts.length) return;
+      var d = f.path.replace(/\\/g, '/').replace(/[^/]*$/, ''), m = /(?:^|\/)(\d{6,7})\/$/.exec(d);
+      var score = ((dirs[d] || []).indexOf('OUT') >= 0 ? 1e8 : 0) + (m ? +m[1] : 0);
+      var k = secs.join(',');
+      (groups[k] = groups[k] || []).push({ sections: secs, path: f.path, text: text, pts: pts, score: score });
+    });
+    return Object.keys(groups).map(function (k) {
+      var g = groups[k].sort(function (a, b) { return b.score - a.score; }), best = g[0], seen = {};
+      var names = best.pts.map(function (p) { return p.name; });
+      best.alternatives = g.slice(1).filter(function (o) { if (seen[o.text] || o.text === best.text) return false; seen[o.text] = 1; return true; }).map(function (o) {
+        var on = o.pts.map(function (p) { return p.name; });
+        return { path: o.path, n: o.pts.length, added: on.filter(function (n) { return names.indexOf(n) < 0; }), removed: names.filter(function (n) { return on.indexOf(n) < 0; }) };
+      });
+      return best;
+    });
+  }
   function solveN(A, b) {
     var n = b.length, M = A.map(function (r, i) { return r.concat([b[i]]); });
     for (var i = 0; i < n; i++) {
@@ -626,7 +666,14 @@
       Object.keys(gps).forEach(function (s) {
         if (!is[s] || gps[s].filter(function (p) { return p.wt > 0; }).length < 4) return;
         trans[s] = GpsTransform(gps[s], s + ' 轉換參數檔');
-        out.gpsCheck[s] = checkParams(gps[s], okPts[s]);
+        // 外插範圍只看有用在地號上的界址點（COA 裡偶爾有跑很遠的孤點）
+        var inParcel = okPts[s];
+        if (found[s].BNP) {
+          var used = {}, bn = parseBnp(found[s].BNP).map;
+          Object.keys(bn).forEach(function (k) { bn[k].forEach(function (n) { used[n] = 1; }); });
+          inParcel = Object.keys(coaRaw[s]).filter(function (k) { return used[k]; }).map(function (k) { return coaRaw[s][k]; }).filter(function (c) { return coordStatus(c[0], c[1]) === 'ok'; });
+        }
+        out.gpsCheck[s] = checkParams(gps[s], inParcel);
       });
       progress('組地號、換算坐標…');
       return tick();
@@ -669,7 +716,7 @@
           files: Object.keys(f).sort(), datum: e67 ? 'TWD67' : 'TWD97',
           datum_src: e67 ? (opts.sec67 ? '管理者指定' : src.join('、')) : '',
           transform: T ? T.describe() + (T === glob ? '（' + NO_NEIGHBOUR + '）' : '') : '', tparams: T ? T.toJSON() : null };
-        if (gc) entry.gps = { n: gc.n, sigma0: gc.sigma0, suspects: gc.suspects, edges: gc.edges, classes: gc.classes, far: gc.far,
+        if (gc) entry.gps = { file: (opts.gpsFile || {})[sec] || '', shared: Object.keys(opts.gps).filter(function (o) { return o !== sec && opts.gps[o] === opts.gps[sec]; }), n: gc.n, sigma0: gc.sigma0, suspects: gc.suspects, edges: gc.edges, classes: gc.classes, far: gc.far,
           residuals: gc.residuals.map(function (r, k) { return { name: r.name, d: r.d, loo: gc.loo[k].d }; }),
           worst: gc.worst.slice(0, 5).map(function (w) { return { from: w.from, to: w.to, d: w.d97, diff: w.diff, ratio: w.ratio }; }) };
         if (sheet[sec] && !e67) entry.datum_warn = '段名表標紅字（67），但目前設定為 97';
@@ -1235,7 +1282,7 @@
     cleanControls: cleanControls, groupBaseFiles: groupBaseFiles, buildBase: buildBase, exportCtl: exportCtl, sectionNamesFromXlsx: sectionNamesFromXlsx,
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
-    parseParamInp: parseParamInp, sectionFromName: sectionFromName, GpsTransform: GpsTransform, checkParams: checkParams,
+    parseParamInp: parseParamInp, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED
   };

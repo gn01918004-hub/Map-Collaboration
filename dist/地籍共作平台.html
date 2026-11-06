@@ -1458,6 +1458,46 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     }
     return null;
   }
+  /** 一個參數檔可能給好幾段用：資料夾「378、379、380」或檔名「KC0378_KC0379_KC0380.inp」→ 三段 */
+  function sectionsFromPath(path) {
+    var parts = String(path).replace(/\\/g, '/').split('/').filter(Boolean);
+    var own = sectionFromName(parts[parts.length - 1]);
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var b = i === parts.length - 1 ? baseName(parts[i]) : parts[i];
+      var nums = b.split(/[、,，_\-\s和及~～]+/).filter(function (t) { return /^(?:KC)?\d{3,4}$/i.test(t); })
+        .map(function (t) { return 'KC' + ('0000' + t.replace(/^KC/i, '')).slice(-4); });
+      if (nums.length >= 2 && (!own || nums.indexOf(own) >= 0)) return uniq(nums).sort();
+    }
+    var one = sectionFromName(path);
+    return one ? [one] : [];
+  }
+  /**
+   * zip 裡常有好幾份 .inp（最上層的工作檔、計算成果\日期\ 的正式版、加經緯度的版本）。
+   * 選法：同一組段裡，有 .out 一起的（真的算過）＞日期新的＞其他；檔名有「經緯度」的不用。
+   * 回傳 [{ sections, path, text, pts, alternatives:[{path, n, added, removed}] }]
+   */
+  function pickParamFiles(files) {
+    var dirs = {};
+    files.forEach(function (f) { var d = f.path.replace(/\\/g, '/').replace(/[^/]*$/, ''); (dirs[d] = dirs[d] || []).push(extName(f.path)); });
+    var groups = {};
+    files.filter(function (f) { return /\.inp$/i.test(f.path) && !/經緯/.test(fileName(f.path)); }).forEach(function (f) {
+      var secs = sectionsFromPath(f.path), text = decode(f.bytes), pts = parseParamInp(text);
+      if (!secs.length || !pts.length) return;
+      var d = f.path.replace(/\\/g, '/').replace(/[^/]*$/, ''), m = /(?:^|\/)(\d{6,7})\/$/.exec(d);
+      var score = ((dirs[d] || []).indexOf('OUT') >= 0 ? 1e8 : 0) + (m ? +m[1] : 0);
+      var k = secs.join(',');
+      (groups[k] = groups[k] || []).push({ sections: secs, path: f.path, text: text, pts: pts, score: score });
+    });
+    return Object.keys(groups).map(function (k) {
+      var g = groups[k].sort(function (a, b) { return b.score - a.score; }), best = g[0], seen = {};
+      var names = best.pts.map(function (p) { return p.name; });
+      best.alternatives = g.slice(1).filter(function (o) { if (seen[o.text] || o.text === best.text) return false; seen[o.text] = 1; return true; }).map(function (o) {
+        var on = o.pts.map(function (p) { return p.name; });
+        return { path: o.path, n: o.pts.length, added: on.filter(function (n) { return names.indexOf(n) < 0; }), removed: names.filter(function (n) { return on.indexOf(n) < 0; }) };
+      });
+      return best;
+    });
+  }
   function solveN(A, b) {
     var n = b.length, M = A.map(function (r, i) { return r.concat([b[i]]); });
     for (var i = 0; i < n; i++) {
@@ -1702,7 +1742,14 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       Object.keys(gps).forEach(function (s) {
         if (!is[s] || gps[s].filter(function (p) { return p.wt > 0; }).length < 4) return;
         trans[s] = GpsTransform(gps[s], s + ' 轉換參數檔');
-        out.gpsCheck[s] = checkParams(gps[s], okPts[s]);
+        // 外插範圍只看有用在地號上的界址點（COA 裡偶爾有跑很遠的孤點）
+        var inParcel = okPts[s];
+        if (found[s].BNP) {
+          var used = {}, bn = parseBnp(found[s].BNP).map;
+          Object.keys(bn).forEach(function (k) { bn[k].forEach(function (n) { used[n] = 1; }); });
+          inParcel = Object.keys(coaRaw[s]).filter(function (k) { return used[k]; }).map(function (k) { return coaRaw[s][k]; }).filter(function (c) { return coordStatus(c[0], c[1]) === 'ok'; });
+        }
+        out.gpsCheck[s] = checkParams(gps[s], inParcel);
       });
       progress('組地號、換算坐標…');
       return tick();
@@ -1745,7 +1792,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           files: Object.keys(f).sort(), datum: e67 ? 'TWD67' : 'TWD97',
           datum_src: e67 ? (opts.sec67 ? '管理者指定' : src.join('、')) : '',
           transform: T ? T.describe() + (T === glob ? '（' + NO_NEIGHBOUR + '）' : '') : '', tparams: T ? T.toJSON() : null };
-        if (gc) entry.gps = { n: gc.n, sigma0: gc.sigma0, suspects: gc.suspects, edges: gc.edges, classes: gc.classes, far: gc.far,
+        if (gc) entry.gps = { file: (opts.gpsFile || {})[sec] || '', shared: Object.keys(opts.gps).filter(function (o) { return o !== sec && opts.gps[o] === opts.gps[sec]; }), n: gc.n, sigma0: gc.sigma0, suspects: gc.suspects, edges: gc.edges, classes: gc.classes, far: gc.far,
           residuals: gc.residuals.map(function (r, k) { return { name: r.name, d: r.d, loo: gc.loo[k].d }; }),
           worst: gc.worst.slice(0, 5).map(function (w) { return { from: w.from, to: w.to, d: w.d97, diff: w.diff, ratio: w.ratio }; }) };
         if (sheet[sec] && !e67) entry.datum_warn = '段名表標紅字（67），但目前設定為 97';
@@ -2311,7 +2358,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     cleanControls: cleanControls, groupBaseFiles: groupBaseFiles, buildBase: buildBase, exportCtl: exportCtl, sectionNamesFromXlsx: sectionNamesFromXlsx,
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
-    parseParamInp: parseParamInp, sectionFromName: sectionFromName, GpsTransform: GpsTransform, checkParams: checkParams,
+    parseParamInp: parseParamInp, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED
   };
@@ -2485,7 +2532,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       if (!Object.keys(found).length) throw new Error('找不到 COA / BNP / PAR / CTL 檔（要選「數值」資料夾或它的 zip）');
       return loadCfg().then(function () {
         return loadGps().then(function (gps) {
-          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gps: gps, progress: progress });
+          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gps: gps, gpsFile: S.gpsFile, progress: progress });
         });
       });
     }).then(function (r) {
@@ -2525,33 +2572,39 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
   function loadGps() {
     return dirOf('底圖/轉換參數').then(function (d) { return walk(d, '', function (p) { return /\.inp$/i.test(p); }); }, function () { return []; })
       .then(function (files) {
-        var out = {};
-        files.forEach(function (f) { var sec = Core.sectionFromName(f.path); if (sec) out[sec] = Core.parseParamInp(Core.decode(f.bytes)); });
+        var out = {}, file = {};
+        files.forEach(function (f) {
+          var pts = Core.parseParamInp(Core.decode(f.bytes));
+          Core.sectionsFromPath(f.path).forEach(function (sec) { out[sec] = pts; file[sec] = f.path; });   // 同一份檔給好幾段 → 同一組點
+        });
+        S.gpsFile = file;
         return out;
       });
   }
   /** 上傳轉換參數（zip、資料夾或 .inp）：找出每段的 .inp，檢查後存起來，再重新整理底圖 */
   function uploadParams(body) {
     return Core.expandZips(body.items).then(function (files) {
-      var bySec = {}, report = [];
-      files.filter(function (f) { return /\.inp$/i.test(f.path); }).forEach(function (f) {
-        var sec = body.section || Core.sectionFromName(f.path);
-        if (!sec) { report.push(['error', Core.fileName(f.path) + '：看不出是哪一段（檔名或資料夾名要有段號，例如 367）']); return; }
-        var text = Core.decode(f.bytes), pts = Core.parseParamInp(text);
-        if (!pts.length) { report.push(['error', f.path + '：讀不到共同點（格式：點名 權 N97 E97 N67 E67）']); return; }
-        if (bySec[sec] && bySec[sec].text !== text) report.push(['warn', sec + ' 有兩份不一樣的 .inp，用 ' + Core.fileName(bySec[sec].path)]);
-        if (!bySec[sec]) bySec[sec] = { path: f.path, text: text, pts: pts };
+      var report = [], picks = Core.pickParamFiles(files);
+      if (!picks.length) throw new Error('沒找到 .inp 轉換參數檔（檔名或資料夾名要有段號，例如 367 或「378、379、380」；格式：點名 權 N97 E97 N67 E67）');
+      var p = dirOf('底圖/轉換參數', true).then(function (d) {
+        // 新的參數檔涵蓋到的段，舊的檔先拿掉
+        return walk(d, '', function (x) { return /\.inp$/i.test(x); }).then(function (old) {
+          var cover = {}; picks.forEach(function (g) { g.sections.forEach(function (s) { cover[s] = 1; }); });
+          return Promise.all(old.filter(function (f) { return Core.sectionsFromPath(f.path).some(function (s) { return cover[s]; }); })
+            .map(function (f) { return d.removeEntry(f.path).catch(function () {}); }));
+        });
       });
-      var secs = Object.keys(bySec);
-      if (!secs.length) throw new Error('沒找到 .inp 轉換參數檔' + (report.length ? '：' + report.map(function (r) { return r[1]; }).join('；') : ''));
-      var p = Promise.resolve();
-      secs.forEach(function (sec) {
-        var c = Core.checkParams(bySec[sec].pts);
-        report.push(['ok', sec + '：' + c.n + ' 個共同點，標準誤差 ' + (c.sigma0 * 100).toFixed(1) + ' 公分' +
+      picks.forEach(function (g) {
+        var c = Core.checkParams(g.pts), label = g.sections.join('、');
+        report.push(['ok', label + '：用 ' + g.path.split('/').slice(-3).join('/') + '，' + c.n + ' 個共同點，標準誤差 ' + (c.sigma0 * 100).toFixed(1) + ' 公分' +
           (c.suspects.length ? '，可疑點 ' + c.suspects.join('、') : '') + (c.edges.length ? '，外圍點 ' + c.edges.join('、') : '')]);
-        p = p.then(function () { return write('底圖/轉換參數/' + sec + '.inp', bySec[sec].text); });
+        g.alternatives.forEach(function (a) {
+          report.push(['info', '另外有 ' + a.path.split('/').slice(-3).join('/') + '（' + a.n + ' 點' + (a.added.length ? '，多了 ' + a.added.join('、') : '') +
+            (a.removed.length ? '，少了 ' + a.removed.join('、') : '') + '），沒有用：正式計算成果優先']);
+        });
+        p = p.then(function () { return write('底圖/轉換參數/' + g.sections.join('_') + '.inp', g.text); });
       });
-      return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report, sections: secs }; });
+      return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report }; });
     });
   }
   function rebuildFromSaved(progress) {
@@ -2784,7 +2837,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     if (path === '/api/base/rebuild') return rebuildFromSaved(body && body.progress).then(function () { return { ok: true }; });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
     if (path === '/api/params/delete') {
-      return dirOf('底圖/轉換參數').then(function (d) { return d.removeEntry(body.section + '.inp'); })
+      return dirOf('底圖/轉換參數').then(function (d) { return d.removeEntry(body.file || body.section + '.inp'); })
         .then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true }; });
     }
     if (path === '/api/export/ctl.zip') {
@@ -2815,7 +2868,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.06-1';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.06-2';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -3435,7 +3488,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     var cm = function (v) { return v == null ? '' : (v * 100).toFixed(1); };
     $('parList').innerHTML = '<table class="dt"><tr><th>段</th><th>方法</th><th>精度</th></tr>' + secs.map(function (x) {
       var g = x.gps, how, acc;
-      if (g) { how = '<b style="color:#13834a">轉換參數檔</b><br><span class="small">GPS 共同點 ' + g.n + ' 點</span>'; acc = '標準誤差 ' + cm(g.sigma0) + ' cm'; }
+      if (g) { how = '<b style="color:#13834a">轉換參數檔</b><br><span class="small">GPS 共同點 ' + g.n + ' 點' + (g.shared && g.shared.length ? '<br>跟 ' + g.shared.map(function (s) { return s.slice(2); }).join('、') + ' 共用' : '') + '</span>'; acc = '標準誤差 ' + cm(g.sigma0) + ' cm'; }
       else if (/全區/.test(x.transform)) { how = '<span style="color:#d92d20">全區共同點</span><br><span class="small">旁邊沒有 97 段可比</span>'; acc = (x.transform.match(/RMS ([\d.]+)/) || [])[1] ? '約 ' + x.transform.match(/RMS ([\d.]+)/)[1] + ' cm' : ''; }
       else { how = '鄰段界址點'; acc = (x.transform.match(/RMS ([\d.]+)/) || [])[1] ? '約 ' + x.transform.match(/RMS ([\d.]+)/)[1] + ' cm' : ''; }
       var det = '';
@@ -3448,7 +3501,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           '<br>最差的幾條：' + g.worst.map(function (w) { return esc(w.from + '→' + w.to) + ' 差 ' + cm(Math.abs(w.diff)) + ' cm（1/' + Math.round(w.ratio) + '）'; }).join('、') +
           '<table class="dt"><tr><th>點</th><th>殘差</th><th>拿掉後推算差</th></tr>' + g.residuals.map(function (r) {
             return '<tr><td>' + esc(r.name) + '</td><td>' + cm(r.d) + ' cm</td><td>' + cm(r.loo) + ' cm</td></tr>';
-          }).join('') + '</table><button class="ghost" data-pdel="' + esc(x.section) + '">刪除這段的參數檔</button></div></details>';
+          }).join('') + '</table><button class="ghost" data-pdel="' + esc(x.section) + '" data-pfile="' + esc(g.file || '') + '">刪除這個參數檔' + (g.shared && g.shared.length ? '（' + (g.shared.length + 1) + ' 段一起）' : '') + '</button></div></details>';
       }
       return '<tr><td>' + esc(secName(x.section)) + '</td><td>' + how + '</td><td>' + acc + det + '</td></tr>';
     }).join('') + '</table>';
@@ -3457,7 +3510,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         var sec = b.getAttribute('data-pdel');
         if (!confirm('刪除 ' + sec + ' 的轉換參數檔，改回自動推算？')) return;
         busy(true, '重新整理底圖中…');
-        api('/api/params/delete', { section: sec, progress: progressTo('重新整理底圖') }).then(function () { busy(false); restart(); }).catch(function (e) { busy(false); toast(e.message); });
+        api('/api/params/delete', { section: sec, file: b.getAttribute('data-pfile'), progress: progressTo('重新整理底圖') }).then(function () { busy(false); restart(); }).catch(function (e) { busy(false); toast(e.message); });
       };
     });
   }

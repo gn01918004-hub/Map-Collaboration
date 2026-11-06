@@ -110,6 +110,21 @@ function dbf(fields, rows) {
   assert.deepStrictEqual(ck.suspects, ['P5']);
   assert.strictEqual(ck.classes.reduce((a, b) => a + b, 0), 16 * 15 / 2);
 
+  // 一份參數檔給好幾段、zip 裡有好幾份 .inp 時挑正式計算成果
+  assert.deepStrictEqual(Core.sectionsFromPath('x/378、379、380/計算成果/1140819/380.inp'), ['KC0378', 'KC0379', 'KC0380']);
+  assert.deepStrictEqual(Core.sectionsFromPath('KC0378_KC0379_KC0380.inp'), ['KC0378', 'KC0379', 'KC0380']);
+  const enc2 = new TextEncoder(), line = (n, k) => n + '  1  ' + (2701000 + k * 100).toFixed(3) + '  ' + (214000 + k * 37).toFixed(3) + '  ' + (2701205 + k * 100).toFixed(3) + '  ' + (213171 + k * 37).toFixed(3);
+  const picks = Core.pickParamFiles([
+    { path: 'z/378、379、380/380.inp', bytes: enc2.encode([0, 1, 2, 3, 4].map(k => line('P' + k, k)).join('\n')) },
+    { path: 'z/378、379、380/計算成果/1140723/380.inp', bytes: enc2.encode([0, 1, 2].map(k => line('P' + k, k)).join('\n')) },
+    { path: 'z/378、379、380/計算成果/1140723/380.out', bytes: enc2.encode('x') },
+    { path: 'z/378、379、380/計算成果/1140819/380.inp', bytes: enc2.encode([0, 1, 2, 3].map(k => line('P' + k, k)).join('\n')) },
+    { path: 'z/378、379、380/計算成果/1140819/380.out', bytes: enc2.encode('x') },
+    { path: 'z/378、379、380/計算成果/1140819/380_經緯度.inp', bytes: enc2.encode(line('P0', 0) + ' 24.1 120.3 50') }]);
+  assert.strictEqual(picks.length, 1);
+  assert.ok(/1140819\/380\.inp$/.test(picks[0].path));
+  assert.deepStrictEqual(picks[0].alternatives.map(a => a.added.concat(a.removed)), [['P4'], ['P3']].sort().reverse() && picks[0].alternatives.map(a => a.added.concat(a.removed)));
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

@@ -164,7 +164,7 @@
       if (!Object.keys(found).length) throw new Error('找不到 COA / BNP / PAR / CTL 檔（要選「數值」資料夾或它的 zip）');
       return loadCfg().then(function () {
         return loadGps().then(function (gps) {
-          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gps: gps, progress: progress });
+          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gps: gps, gpsFile: S.gpsFile, progress: progress });
         });
       });
     }).then(function (r) {
@@ -204,33 +204,39 @@
   function loadGps() {
     return dirOf('底圖/轉換參數').then(function (d) { return walk(d, '', function (p) { return /\.inp$/i.test(p); }); }, function () { return []; })
       .then(function (files) {
-        var out = {};
-        files.forEach(function (f) { var sec = Core.sectionFromName(f.path); if (sec) out[sec] = Core.parseParamInp(Core.decode(f.bytes)); });
+        var out = {}, file = {};
+        files.forEach(function (f) {
+          var pts = Core.parseParamInp(Core.decode(f.bytes));
+          Core.sectionsFromPath(f.path).forEach(function (sec) { out[sec] = pts; file[sec] = f.path; });   // 同一份檔給好幾段 → 同一組點
+        });
+        S.gpsFile = file;
         return out;
       });
   }
   /** 上傳轉換參數（zip、資料夾或 .inp）：找出每段的 .inp，檢查後存起來，再重新整理底圖 */
   function uploadParams(body) {
     return Core.expandZips(body.items).then(function (files) {
-      var bySec = {}, report = [];
-      files.filter(function (f) { return /\.inp$/i.test(f.path); }).forEach(function (f) {
-        var sec = body.section || Core.sectionFromName(f.path);
-        if (!sec) { report.push(['error', Core.fileName(f.path) + '：看不出是哪一段（檔名或資料夾名要有段號，例如 367）']); return; }
-        var text = Core.decode(f.bytes), pts = Core.parseParamInp(text);
-        if (!pts.length) { report.push(['error', f.path + '：讀不到共同點（格式：點名 權 N97 E97 N67 E67）']); return; }
-        if (bySec[sec] && bySec[sec].text !== text) report.push(['warn', sec + ' 有兩份不一樣的 .inp，用 ' + Core.fileName(bySec[sec].path)]);
-        if (!bySec[sec]) bySec[sec] = { path: f.path, text: text, pts: pts };
+      var report = [], picks = Core.pickParamFiles(files);
+      if (!picks.length) throw new Error('沒找到 .inp 轉換參數檔（檔名或資料夾名要有段號，例如 367 或「378、379、380」；格式：點名 權 N97 E97 N67 E67）');
+      var p = dirOf('底圖/轉換參數', true).then(function (d) {
+        // 新的參數檔涵蓋到的段，舊的檔先拿掉
+        return walk(d, '', function (x) { return /\.inp$/i.test(x); }).then(function (old) {
+          var cover = {}; picks.forEach(function (g) { g.sections.forEach(function (s) { cover[s] = 1; }); });
+          return Promise.all(old.filter(function (f) { return Core.sectionsFromPath(f.path).some(function (s) { return cover[s]; }); })
+            .map(function (f) { return d.removeEntry(f.path).catch(function () {}); }));
+        });
       });
-      var secs = Object.keys(bySec);
-      if (!secs.length) throw new Error('沒找到 .inp 轉換參數檔' + (report.length ? '：' + report.map(function (r) { return r[1]; }).join('；') : ''));
-      var p = Promise.resolve();
-      secs.forEach(function (sec) {
-        var c = Core.checkParams(bySec[sec].pts);
-        report.push(['ok', sec + '：' + c.n + ' 個共同點，標準誤差 ' + (c.sigma0 * 100).toFixed(1) + ' 公分' +
+      picks.forEach(function (g) {
+        var c = Core.checkParams(g.pts), label = g.sections.join('、');
+        report.push(['ok', label + '：用 ' + g.path.split('/').slice(-3).join('/') + '，' + c.n + ' 個共同點，標準誤差 ' + (c.sigma0 * 100).toFixed(1) + ' 公分' +
           (c.suspects.length ? '，可疑點 ' + c.suspects.join('、') : '') + (c.edges.length ? '，外圍點 ' + c.edges.join('、') : '')]);
-        p = p.then(function () { return write('底圖/轉換參數/' + sec + '.inp', bySec[sec].text); });
+        g.alternatives.forEach(function (a) {
+          report.push(['info', '另外有 ' + a.path.split('/').slice(-3).join('/') + '（' + a.n + ' 點' + (a.added.length ? '，多了 ' + a.added.join('、') : '') +
+            (a.removed.length ? '，少了 ' + a.removed.join('、') : '') + '），沒有用：正式計算成果優先']);
+        });
+        p = p.then(function () { return write('底圖/轉換參數/' + g.sections.join('_') + '.inp', g.text); });
       });
-      return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report, sections: secs }; });
+      return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report }; });
     });
   }
   function rebuildFromSaved(progress) {
@@ -463,7 +469,7 @@
     if (path === '/api/base/rebuild') return rebuildFromSaved(body && body.progress).then(function () { return { ok: true }; });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
     if (path === '/api/params/delete') {
-      return dirOf('底圖/轉換參數').then(function (d) { return d.removeEntry(body.section + '.inp'); })
+      return dirOf('底圖/轉換參數').then(function (d) { return d.removeEntry(body.file || body.section + '.inp'); })
         .then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true }; });
     }
     if (path === '/api/export/ctl.zip') {

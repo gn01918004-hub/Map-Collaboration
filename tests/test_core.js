@@ -94,6 +94,22 @@ function dbf(fields, rows) {
     { id: 'y', surveyor: 'B', created: 3, caseType: '分割', parcels: [{ section: 'KC1114', parcel: '10', found: true, ring: [[2704000, 218000], [2704010, 218000], [2704010, 218010]] }] }]);
   assert.deepStrictEqual(h['KC1114|10'].map(e => e.caseType), ['分割', '鑑界']);
 
+  // 段轉換參數檔：六參數＋殘差內插，共同點上完全吻合；殘差大的點列為可疑
+  const tr97 = (n, e) => [n - 205.26 + 0.0000135 * (n - 2700000) - 0.0000236 * (e - 216000), e + 829.14 - 0.0000386 * (n - 2700000) + 0.0000145 * (e - 216000)];
+  const grid = []; for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) grid.push([2699500 + i * 400 + (j % 2) * 37, 215200 + j * 450 + i * 23]);
+  const inp = grid.map((g, k) => { const q = tr97(g[0], g[1]); const bump = k === 5 ? 0.06 : (k % 3 - 1) * 0.004; return 'P' + k + '  1  ' + (q[0] + bump).toFixed(3) + '  ' + q[1].toFixed(3) + '  ' + g[0].toFixed(3) + '  ' + g[1].toFixed(3); }).join('\n');
+  const pp = Core.parseParamInp(inp);
+  assert.strictEqual(pp.length, 16);
+  assert.strictEqual(Core.sectionFromName('6effbaa1-367/367/計算成果/367.inp'), 'KC0367');
+  const GT = Core.GpsTransform(pp, 'KC0367');
+  pp.forEach(p => { const q = GT.apply(p.n67, p.e67); assert.ok(Math.hypot(q[0] - p.n97, q[1] - p.e97) < 0.0005, '共同點上要吻合'); });
+  const reload = Core.Transform.from(JSON.parse(JSON.stringify(GT.toJSON())));
+  const qa = GT.apply(2700100, 215700), qb = reload.apply(2700100, 215700);
+  assert.ok(Math.hypot(qa[0] - qb[0], qa[1] - qb[1]) < 1e-6, '存檔後讀回來結果一樣');
+  const ck = Core.checkParams(pp);
+  assert.deepStrictEqual(ck.suspects, ['P5']);
+  assert.strictEqual(ck.classes.reduce((a, b) => a + b, 0), 16 * 15 / 2);
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

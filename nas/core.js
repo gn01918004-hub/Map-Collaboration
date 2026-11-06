@@ -355,6 +355,138 @@
   Transform.prototype.toJSON = function () { return { cy: this.cy, cx: this.cx, py: this.py, px: this.px, n: this.n, rms: this.rms, label: this.label }; };
   Transform.from = function (d) { var t = new Transform(null, d.label); ['cy', 'cx', 'py', 'px', 'n', 'rms'].forEach(function (k) { t[k] = d[k]; }); return t; };
 
+  // ───────────────────────── 段轉換參數檔（GPS 實測共同點） ─────────────────────────
+  /**
+   * 讀 .inp（地籍坐標轉換程式的輸入檔）：點名 權 N97 E97 N67 E67
+   * 例：「GA13     1    2699294.056     216844.448    2699499.318     216015.293」
+   */
+  function parseParamInp(text) {
+    var out = [];
+    lines(text).forEach(function (l, i) {
+      var t = l.trim().split(/\s+/);
+      if (t.length < 6 || !isNum(t[1]) || !isNum(t[2]) || !isNum(t[3]) || !isNum(t[4]) || !isNum(t[5])) return;
+      var n97 = +t[2], e97 = +t[3], n67 = +t[4], e67 = +t[5];
+      if (isX(t[2]) && isY(t[3])) { var a = n97; n97 = e97; e97 = a; }
+      if (isX(t[4]) && isY(t[5])) { var b = n67; n67 = e67; e67 = b; }
+      out.push({ name: t[0], wt: +t[1], n97: n97, e97: e97, n67: n67, e67: e67, line: i + 1 });
+    });
+    return out;
+  }
+  /** 「367」「0367」「KC0367」→ KC0367 */
+  function sectionFromName(path) {
+    var s = sectionOf(path); if (s) return s;
+    var parts = String(path).replace(/\\/g, '/').split('/'), m;
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var b = i === parts.length - 1 ? baseName(parts[i]) : parts[i];
+      if ((m = /^(?:KC)?(\d{3,4})$/i.exec(b.trim()))) return 'KC' + ('0000' + m[1]).slice(-4);
+    }
+    return null;
+  }
+  function solveN(A, b) {
+    var n = b.length, M = A.map(function (r, i) { return r.concat([b[i]]); });
+    for (var i = 0; i < n; i++) {
+      var piv = i; for (var r = i + 1; r < n; r++) if (Math.abs(M[r][i]) > Math.abs(M[piv][i])) piv = r;
+      var t = M[i]; M[i] = M[piv]; M[piv] = t;
+      if (Math.abs(M[i][i]) < 1e-15) return null;
+      for (r = i + 1; r < n; r++) { var f = M[r][i] / M[i][i]; for (var k = i; k <= n; k++) M[r][k] -= f * M[i][k]; }
+    }
+    var x = new Array(n);
+    for (i = n - 1; i >= 0; i--) { var sm = M[i][n]; for (k = i + 1; k < n; k++) sm -= M[i][k] * x[k]; x[i] = sm / M[i][i]; }
+    return x;
+  }
+  /**
+   * GPS 共同點轉換（67 → 97）：六參數仿射（權重 0 的點不用）＋最小二乘配置法殘差內插（線性協方差，
+   * 跟成大「地籍坐標轉換」程式同一種做法），共同點上會完全吻合，離共同點越遠越接近六參數結果。
+   */
+  function GpsTransform(pts, label) {
+    var use = pts.filter(function (p) { return p.wt > 0; });
+    var pairs = use.map(function (p) { return [[p.n67, p.e67], [p.n97, p.e97]]; });
+    var T = new Transform(null, label);
+    // 不剔除（照參數檔，全部用）
+    T.cy = pairs.reduce(function (a, p) { return a + p[0][0]; }, 0) / pairs.length;
+    T.cx = pairs.reduce(function (a, p) { return a + p[0][1]; }, 0) / pairs.length;
+    var rows = pairs.map(function (p) { return [1, (p[0][0] - T.cy) / 1000, (p[0][1] - T.cx) / 1000]; });
+    T.py = solve3(rows, pairs.map(function (p) { return p[1][0] - p[0][0]; }));
+    T.px = solve3(rows, pairs.map(function (p) { return p[1][1] - p[0][1]; }));
+    T.n = pairs.length;
+    var res = pairs.map(function (p) { var q = T.apply(p[0][0], p[0][1]); return [p[1][0] - q[0], p[1][1] - q[1]]; });
+    var vv = res.reduce(function (a, r) { return a + r[0] * r[0] + r[1] * r[1]; }, 0), dof = 2 * pairs.length - 6;
+    T.rms = Math.sqrt(vv / pairs.length);
+    T.sigma0 = dof > 0 ? Math.sqrt(vv / dof) : null;
+    // 殘差內插：C(d) = c0 (1 - d/a)，a = 共同點最遠距離
+    var a = 0;
+    pairs.forEach(function (p) { pairs.forEach(function (q) { a = Math.max(a, hypot(p[0][0] - q[0][0], p[0][1] - q[0][1])); }); });
+    var C = pairs.map(function (p) { return pairs.map(function (q) { var d = hypot(p[0][0] - q[0][0], p[0][1] - q[0][1]); return Math.max(0, 1 - d / a) + (p === q ? 1e-9 : 0); }); });
+    var an = solveN(C, res.map(function (r) { return r[0]; })), ae = solveN(C, res.map(function (r) { return r[1]; }));
+    if (an && ae && a > 0) T.lsc = { a: a, pts: pairs.map(function (p) { return [p[0][0], p[0][1]]; }), an: an, ae: ae };
+    T.residuals = use.map(function (p, i) { return { name: p.name, dn: res[i][0], de: res[i][1], d: hypot(res[i][0], res[i][1]) }; });
+    T.gps = true;
+    return T;
+  }
+  var baseApply = Transform.prototype.apply;
+  Transform.prototype.apply = function (y, x) {
+    var q = baseApply.call(this, y, x);
+    if (this.lsc) {
+      var L = this.lsc, dn = 0, de = 0;
+      for (var i = 0; i < L.pts.length; i++) {
+        var c = 1 - hypot(y - L.pts[i][0], x - L.pts[i][1]) / L.a;
+        if (c > 0) { dn += c * L.an[i]; de += c * L.ae[i]; }
+      }
+      q = [q[0] + dn, q[1] + de];
+    }
+    return q;
+  };
+  var baseDescribe = Transform.prototype.describe;
+  Transform.prototype.describe = function () {
+    if (!this.gps) return baseDescribe.call(this);
+    return this.label + '：GPS 實測共同點 ' + this.n + ' 點，六參數標準誤差 ' + (this.sigma0 * 100).toFixed(1) + ' 公分' + (this.lsc ? '，加殘差內插（共同點上完全吻合）' : '');
+  };
+  var baseToJSON = Transform.prototype.toJSON;
+  Transform.prototype.toJSON = function () { var o = baseToJSON.call(this); if (this.lsc) o.lsc = this.lsc; if (this.gps) { o.gps = true; o.sigma0 = this.sigma0; } return o; };
+  var baseFrom = Transform.from;
+  Transform.from = function (d) { var t = baseFrom(d); if (d.lsc) t.lsc = d.lsc; if (d.gps) { t.gps = true; t.sigma0 = d.sigma0; } return t; };
+
+  /**
+   * 參數檔品質檢查：殘差、留一法（拿掉一點後用其他點推它，看差多少）、
+   * 邊長檢核（兩點間 97 距離 vs 67 距離，相對精度分 1/5000、1/10000、1/15000、1/20000 四級，跟 chkdist 一樣）
+   */
+  function checkParams(pts, sectionPts) {
+    var use = pts.filter(function (p) { return p.wt > 0; });
+    var T = GpsTransform(pts, '');
+    var loo = use.map(function (p) {
+      var others = use.filter(function (q) { return q !== p; });
+      if (others.length < 4) return { name: p.name, d: null };
+      var t = GpsTransform(others, ''), q = t.apply(p.n67, p.e67);
+      return { name: p.name, d: hypot(q[0] - p.n97, q[1] - p.e97) };
+    });
+    var classes = [0, 0, 0, 0, 0], bad = {}, worst = [];
+    for (var i = 0; i < use.length; i++) for (var j = i + 1; j < use.length; j++) {
+      var A = use[i], B = use[j];
+      var d97 = hypot(A.n97 - B.n97, A.e97 - B.e97), d67 = hypot(A.n67 - B.n67, A.e67 - B.e67), diff = d97 - d67;
+      var ratio = diff ? Math.abs(d97 / diff) : Infinity;
+      var c = ratio < 5000 ? 0 : ratio < 10000 ? 1 : ratio < 15000 ? 2 : ratio < 20000 ? 3 : 4;
+      classes[c]++;
+      if (c <= 1) { bad[A.name] = (bad[A.name] || 0) + 1; bad[B.name] = (bad[B.name] || 0) + 1; }
+      worst.push({ from: A.name, to: B.name, d97: d97, d67: d67, diff: diff, ratio: ratio });
+    }
+    worst.sort(function (a, b) { return a.ratio - b.ratio; });
+    var sig = T.sigma0 || 0.01;
+    // 可疑點：自己的殘差大（坐標可能有問題）；外圍點：殘差小但拿掉後推不準（在邊邊，影響外插）
+    var suspects = T.residuals.filter(function (r) { return r.d > 2.5 * sig; }).map(function (r) { return r.name; });
+    var edges = T.residuals.filter(function (r, k) { return suspects.indexOf(r.name) < 0 && loo[k].d != null && loo[k].d > 3.5 * sig; }).map(function (r) { return r.name; });
+    // 段內離最近共同點多遠（外插的地方比較不準）
+    var far = null;
+    if (sectionPts && sectionPts.length) {
+      var maxd = 0, over = 0;
+      sectionPts.forEach(function (c) {
+        var m = Infinity; use.forEach(function (p) { m = Math.min(m, hypot(c[0] - p.n67, c[1] - p.e67)); });
+        maxd = Math.max(maxd, m); if (m > 500) over++;
+      });
+      far = { max: maxd, over500: over / sectionPts.length };
+    }
+    return { n: use.length, sigma0: T.sigma0, residuals: T.residuals, loo: loo, classes: classes, worst: worst.slice(0, 8), badPairs: bad, suspects: suspects, edges: edges, far: far };
+  }
+
   function buildTransforms(det, sec67) {
     var is67 = {}; sec67.forEach(function (s) { is67[s] = 1; });
     var all = [];
@@ -484,8 +616,18 @@
         var gs = {}; Object.keys(is).forEach(function (s) { if (s in det.groupOf) gs[det.groupOf[s]] = 1; });
         Object.keys(gs).forEach(function (g) { det.groups[g].forEach(function (s) { is[s] = 1; }); });
       }
+      // 有轉換參數檔的段一定是 67
+      var gps = opts.gps || {};
+      Object.keys(gps).forEach(function (s) { if (found[s] && !abolished[s]) is[s] = 1; });
       eff67 = Object.keys(is).sort();
       var bt = buildTransforms(det, eff67); trans = bt.trans; glob = bt.glob;
+      // 段轉換參數檔（GPS 實測共同點）優先
+      out.gpsCheck = {};
+      Object.keys(gps).forEach(function (s) {
+        if (!is[s] || gps[s].filter(function (p) { return p.wt > 0; }).length < 4) return;
+        trans[s] = GpsTransform(gps[s], s + ' 轉換參數檔');
+        out.gpsCheck[s] = checkParams(gps[s], okPts[s]);
+      });
       progress('組地號、換算坐標…');
       return tick();
     }).then(function () {
@@ -521,11 +663,15 @@
         var src = [];
         if (sheet[sec]) src.push('段名表紅字');
         if (auto[sec]) src.push('自動偵測');
-        var e67 = eff67.indexOf(sec) >= 0;
+        var e67 = eff67.indexOf(sec) >= 0, gc = out.gpsCheck[sec];
+        if (gc) src.push('有轉換參數檔');
         var entry = { section: sec, parcels: parcels.length, points: Object.keys(coaRaw[sec]).length, missing: missing,
           files: Object.keys(f).sort(), datum: e67 ? 'TWD67' : 'TWD97',
           datum_src: e67 ? (opts.sec67 ? '管理者指定' : src.join('、')) : '',
           transform: T ? T.describe() + (T === glob ? '（' + NO_NEIGHBOUR + '）' : '') : '', tparams: T ? T.toJSON() : null };
+        if (gc) entry.gps = { n: gc.n, sigma0: gc.sigma0, suspects: gc.suspects, edges: gc.edges, classes: gc.classes, far: gc.far,
+          residuals: gc.residuals.map(function (r, k) { return { name: r.name, d: r.d, loo: gc.loo[k].d }; }),
+          worst: gc.worst.slice(0, 5).map(function (w) { return { from: w.from, to: w.to, d: w.d97, diff: w.diff, ratio: w.ratio }; }) };
         if (sheet[sec] && !e67) entry.datum_warn = '段名表標紅字（67），但目前設定為 97';
         else if (auto[sec] && !e67) entry.datum_warn = '自動偵測像是 67，但目前設定為 97';
         if (b[0] < Infinity) { var sw = tm2ToLatLng(b[0], b[2]), ne = tm2ToLatLng(b[1], b[3]); entry.bbox = [sw[0], sw[1], ne[0], ne[1]]; }
@@ -574,11 +720,23 @@
         tcache.set(key, t);
         return t;
       };
+      // GPS 實測過的圖根點：67 坐標跟參數檔一樣 → 直接用實測的 97
+      var gpsBy = {};
+      Object.keys(opts.gps || {}).forEach(function (s) { opts.gps[s].forEach(function (p) { (gpsBy[p.name.toUpperCase()] = gpsBy[p.name.toUpperCase()] || []).push({ p: p, sec: s }); }); });
+      var gpsHit = function (name, y, x) {
+        var a = gpsBy[name.toUpperCase()] || [];
+        for (var i = 0; i < a.length; i++) {
+          if (hypot(a[i].p.n67 - y, a[i].p.e67 - x) <= 0.01) return { as: 'TWD67', p: a[i].p, sec: a[i].sec };
+          if (hypot(a[i].p.n97 - y, a[i].p.e97 - x) <= 0.01) return { as: 'TWD97', p: a[i].p, sec: a[i].sec };
+        }
+        return null;
+      };
       var decided = new Map();
       var decide = function (k, y, x) {
         if (decided.has(k)) return decided.get(k);
-        var p = prior.get(k), r, ks = p ? Object.keys(p) : [];
-        if (ks.length === 1) r = [ks[0], '依所在段'];
+        var p = prior.get(k), r, ks = p ? Object.keys(p) : [], g = gpsHit(k.split('|')[0], y, x);
+        if (g) r = [g.as, g.as === 'TWD67' ? 'GPS 實測（' + g.sec + ' 轉換參數檔）' : '跟 ' + g.sec + ' 轉換參數檔的 GPS 實測一致'];
+        else if (ks.length === 1) r = [ks[0], '依所在段'];
         else {
           var d97 = nearestDist(g97, y, x, 300), d67 = eff67.length ? nearestDist(g67, y, x, 300) : Infinity;
           if (d67 < 25 && d97 > Math.max(60, 4 * d67)) r = ['TWD67', '依位置判斷（離 67 界址點 ' + Math.round(d67) + ' m、離 97 界址點 ' + (d97 > 1e5 ? '很遠' : Math.round(d97) + ' m') + '）'];
@@ -622,7 +780,9 @@
           if (e.status === 'ok') {
             var d = decide(e.name.toUpperCase() + '|' + e.y + '|' + e.x, e.y, e.x);
             e.raw = [e.y, e.x]; e.datum = d[0]; e.datum_why = d[1];
-            if (d[0] === 'TWD67') { var q = transFor(e.y, e.x).apply(e.y, e.x); e.y = r3(q[0]); e.x = r3(q[1]); }
+            var gh = d[0] === 'TWD67' && /^GPS 實測/.test(d[1]) ? gpsHit(e.name, e.y, e.x) : null;
+            if (gh) { e.y = gh.p.n97; e.x = gh.p.e97; }
+            else if (d[0] === 'TWD67') { var q = transFor(e.y, e.x).apply(e.y, e.x); e.y = r3(q[0]); e.x = r3(q[1]); }
             stats[d[0]]++;
           }
           ctlEntries.push(e);
@@ -635,6 +795,7 @@
         return { section: e.section, line: e.line, name: e.name, y: e.y, x: e.x, raw: e.raw || null, status: e.status, datum: e.datum || null, datum_why: e.datum_why || null, fix: e.fix };
       }) };
       out.index = { version: 1, built: Date.now(), sections: out.entriesIdx, abolished: skipped,
+        gps: Object.keys(out.gpsCheck).sort(),
         datum: { sec67: eff67, auto67: det.auto67, sheet67: SHEET_67, configured: !!opts.sec67, global: glob.describe(), ctl: stats, shared_ctl: Object.keys(shared).sort() },
         ctl: { lines: ctlEntries.length, points: cc.points.length, issues: summary } };
       delete out.entriesIdx; delete out.coa97;
@@ -1074,6 +1235,7 @@
     cleanControls: cleanControls, groupBaseFiles: groupBaseFiles, buildBase: buildBase, exportCtl: exportCtl, sectionNamesFromXlsx: sectionNamesFromXlsx,
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
+    parseParamInp: parseParamInp, sectionFromName: sectionFromName, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED
   };

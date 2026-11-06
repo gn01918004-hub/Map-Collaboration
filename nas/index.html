@@ -129,6 +129,15 @@
         <button id="baseRebuild" class="ghost">重新整理</button>
       </div>
       <div class="card">
+        <h3>各段轉換參數（67 → 97）</h3>
+        <p class="small">有做過 GPS 共同點的段，把轉換參數資料夾或 zip（裡面有 <b>段號.inp</b>，例如 367.inp）放進來，那一段就改用它，比自動推算準很多。</p>
+        <button id="parPickDir" class="pick">選資料夾</button>
+        <button id="parPickFile" class="pick">選 zip / .inp</button>
+        <input type="file" id="parDir" webkitdirectory multiple hidden>
+        <input type="file" id="parFile" accept=".zip,.inp" multiple hidden>
+        <div id="parList"></div>
+      </div>
+      <div class="card">
         <h3>坐標系統（全部換成 TWD97 顯示）</h3>
         <div id="datumInfo"></div>
         <label>哪些段是 TWD67（一行一個或用逗號分開）</label>

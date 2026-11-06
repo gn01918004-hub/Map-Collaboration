@@ -162,3 +162,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
 .tl .it button { font-size: 12px; padding: 1px 6px; margin-left: 4px; }
 .tag.new { background: var(--green); } .tag.old { background: #667085; }
 .tag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 20px; color: #fff; background: #475467; vertical-align: middle; }
+#parList .dt td:first-child, #parList .dt th { white-space: nowrap; }
+#parList .dt td { font-size: 13px; }
+#parList details .dt td { white-space: nowrap; }

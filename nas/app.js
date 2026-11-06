@@ -1,7 +1,7 @@
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.07-4';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-5';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -52,7 +52,7 @@
     field: L.layerGroup().addTo(map),
     hl: L.layerGroup().addTo(map)
   };
-  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true, graphic: true };
+  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true, graphic: true, lost: false };
 
   var S = { info: null, controls: [], field: null, sections: {}, secCache: {}, secLoading: {}, onlyWho: '' };
 
@@ -193,6 +193,9 @@
       '<tr><td>Y（縱）</td><td>' + f3(p.y) + '</td></tr><tr><td>X（橫）</td><td>' + f3(p.x) + '</td></tr>' +
       '<tr><td>出現在</td><td>' + esc(p.sections.map(secName).join('、')) + '（' + p.count + ' 次）</td></tr>' +
       (p.flags.length ? '<tr><td>註記碼</td><td>' + esc(p.flags.join(' ')) + '</td></tr>' : '') +
+      (p.sv ? '<tr><td>清查狀態</td><td><b style="color:' + (SV_COL[p.sv.cls] === '#98a2b3' ? '#667085' : SV_COL[p.sv.cls]) + '">' + esc(p.sv.label) + '</b>' +
+        (p.sv.time ? '<br><span class="small">' + esc(p.sv.time) + '</span>' : '') + (p.sv.ps ? '<br><span class="small">' + esc(p.sv.ps) + '</span>' : '') + '</td></tr>' :
+        (S.info && S.info.survey ? '<tr><td>清查狀態</td><td>未清查</td></tr>' : '')) +
       '<tr><td>坐標系統</td><td>' + (p.datum === 'TWD67' ? '原為 67，已換成 97' : p.datum === '?' ? '<b style="color:#d92d20">不確定</b>' : 'TWD97') + '</td></tr>' +
       (p.raw ? '<tr><td>CTL 原始值</td><td>' + p.raw.map(function (r) { return f3(r[0]) + ', ' + f3(r[1]); }).join('<br>') + '</td></tr>' : '') +
       (p.fix ? '<tr><td>格式修正</td><td class="small">' + esc(p.fix.join('、')) + '</td></tr>' : '') + '</table>';
@@ -209,6 +212,8 @@
   }
   function copyBtn(n, y, x) { return '<button class="copy" data-copy="' + esc(n + ',' + f3(y) + ',' + f3(x)) + '">📋 複製坐標</button>'; }
   function tolM() { return ((S.info && S.info.tolerance_cm) || 2) / 100; }
+  // 清查狀態顏色：有效＝綠、轉換參數點＝深綠框、預計＝青、未知＝黃、找不到＝灰、沒清查＝藍
+  var SV_COL = { ok: '#13a454', param: '#13a454', plan: '#0ea5b7', unknown: '#e6a700', lost: '#98a2b3', none: '#1f6feb' };
   function refreshCtl() {
     layers.ctl.clearLayers();
     layers.clabel.clearLayers();
@@ -218,8 +223,10 @@
     S.controls.forEach(function (p) {
       if (!p.ll || n > 4000 || !vb.contains(p.ll)) return;
       n++;
-      var warn = p.notes && p.notes.length;
-      var m = L.circleMarker(p.ll, { renderer: renderer, radius: z >= 18 ? 6 : 4, color: '#fff', weight: 2, fillColor: warn ? '#7c8db5' : '#1f6feb', fillOpacity: 1 });
+      var warn = p.notes && p.notes.length, cls = p.sv ? p.sv.cls : (S.info && S.info.survey ? 'none' : '');
+      if (cls === 'lost' && !show.lost) return;
+      var col = SV_COL[cls] || (warn ? '#7c8db5' : '#1f6feb');
+      var m = L.circleMarker(p.ll, { renderer: renderer, radius: (z >= 18 ? 6 : 4) + (cls === 'ok' || cls === 'param' ? 1 : 0), color: cls === 'param' ? '#0b6b35' : '#fff', weight: 2, fillColor: col, fillOpacity: cls === 'lost' ? 0.6 : 1 });
       m.bindPopup(function () { return ctlPopup(p); });
       layers.ctl.addLayer(m);
       if (lab && n < 600) L.marker(p.ll, { interactive: false, icon: L.divIcon({ className: '', html: '<div class="clbl">' + esc(p.name) + '</div>', iconSize: [0, 0] }) }).addTo(layers.clabel);
@@ -690,6 +697,10 @@
     renderParams();
     renderChecks();
     renderGraphic();
+    var sv = S.info.survey;
+    $('svyInfo').innerHTML = sv ? '<div class="small">' + new Date(sv.at).toLocaleString() + ' 匯入（' + esc(sv.files.join('、')) + '）：' +
+      Object.keys(sv.counts).map(function (k) { return '<b style="color:' + SV_COL[k] + '">●</b> ' + esc(CLS_TXT[k]) + ' ' + sv.counts[k]; }).join('　') +
+      (sv.unmatched.length ? '<br>平台沒有的點名 ' + sv.unmatched.length + ' 個' : '') + '</div>' : '<div class="small">還沒匯入</div>';
     $('exNames').value = (i.param_exclude_names || []).join('\n');
     $('chkTol').value = i.check_tol_cm || 3;
     $('secNames').value = Object.keys(i.section_names || {}).map(function (k) { return k + '=' + i.section_names[k]; }).join('\n');
@@ -714,6 +725,22 @@
     });
   }
   $('issueType').onchange = drawIssues;
+  var CLS_TXT = { ok: '有效', param: '轉換參數點', plan: '預計作為轉換參數點', unknown: '狀態未知', lost: '找不到', none: '未清查' };
+  function surveyUpload(list) {
+    if (!list.length) return;
+    busy(true, '讀取清查資料…');
+    Local.fileListToItems(list).then(function (items) { return api('/api/ctlsurvey/upload', { items: items }); }).then(function (r) {
+      busy(false);
+      $('svyMsg').innerHTML = r.report.map(function (x) { return '<div class="msg ' + x[0] + '">' + esc(x[1]) + '</div>'; }).join('');
+      return api('/api/controls').then(function (c) { S.controls = c; return loadInfo(); }).then(function () { renderAdmin(); refreshAll(); });
+    }).catch(function (e) { busy(false); toast('失敗：' + e.message, 10000); });
+  }
+  $('svyPick').onclick = function () { $('svyFile').click(); };
+  $('svyFile').onchange = function () { surveyUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; })); this.value = ''; };
+  $('svyClear').onclick = function () {
+    if (!confirm('清掉匯入的清查狀態？')) return;
+    api('/api/ctlsurvey/clear', {}).then(function () { return api('/api/controls'); }).then(function (c) { S.controls = c; return loadInfo(); }).then(function () { renderAdmin(); refreshAll(); });
+  };
   function renderGraphic() {
     var gl = (S.info && S.info.graphic) || [];
     $('grList').innerHTML = gl.length ? '<table class="dt"><tr><th>段</th><th>內容</th><th>坐標</th><th></th></tr>' + gl.map(function (g) {
@@ -878,7 +905,8 @@
   $('kitGo').onclick = function () {
     busy(true, '產生外業包…');
     api('/api/kit', { parcelsText: $('kitParcels').value, radius: $('kitRadius').value }).then(function (r) {
-      busy(false); $('kitMsg').innerHTML = '已下載 <b>' + esc(r.file) + '</b>：' + Object.keys(r.counts).map(function (k) { return k + ' ' + r.counts[k] + ' 點'; }).join('、');
+      busy(false); $('kitMsg').innerHTML = '已下載 <b>' + esc(r.file) + '</b>：' + Object.keys(r.counts).map(function (k) { return k + ' ' + r.counts[k] + ' 點'; }).join('、') +
+        (r.lost && r.lost.length ? '<div class="small">清查回報找不到、沒放進去的圖根點：' + esc(r.lost.join('、')) + '</div>' : '');
     }).catch(function (e) { busy(false); toast(e.message, 8000); });
   };
   var wb = { dir: null, files: [] };

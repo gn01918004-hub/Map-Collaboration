@@ -224,7 +224,7 @@ function dbf(fields, rows) {
       { name: '9', code: 'hl1', y: q97[0] + 20, x: q97[1], src: 'x' }],
       coa, ctlByName: {}, d14: Core.parseDbfRaw(files.d14), d20: q20, registry: { points: [], maxNum: 58 }, svCode: 'W' });
     assert.strictEqual(r3.checks.length, 2); assert.ok(r3.checks.every(c => c.kind === '補點'));
-    assert.strictEqual(r3.plan.toD14.length, 1); assert.ok(/\.11$/.test(r3.plan.toD14[0].out));
+    assert.strictEqual(r3.plan.toD14.length, 0); assert.ok(r3.report.some(x => /不是 00～99/.test(x[1])));
     assert.strictEqual(Core.parseDbfRaw(files.d14).nrec, 2); assert.strictEqual(Core.parseDbfRaw(files.d20).nrec, 2);
   }
 
@@ -234,3 +234,19 @@ function dbf(fields, rows) {
   assert.strictEqual(new TextDecoder().decode(back[0].bytes), '測試');
   console.log('core.js 測試全部通過');
 })().catch(e => { console.error(e); process.exit(1); });
+
+// 圖根點清查
+{
+  const rows = Core.parseCtlSurvey('ptn,realy,realx,corsys,lv,97y,97x,ps,state,ispic,timestamp\nHL1,2700000.000,215000.000,67,0,,,好,0,true,2025\nHL1,2600000,215000,67,0,,,,x,,2024\nhl2,,,,,2700100.00,215900.00,,x,,\nNO9,1,2,,,,,,?,,\n');
+  assert.deepStrictEqual(rows.map(r => r.cls), ['param', 'lost', 'lost', 'unknown']);
+  const ctl = [{ id: 'a', name: 'HL1', y: 2699800, x: 215828, raw: [[2700000, 215000]] }, { id: 'b', name: 'HL2', y: 2700100.01, x: 215900 }];
+  const m = Core.matchCtlSurvey(ctl, rows);
+  assert.strictEqual(m.byId.a.cls, 'param'); assert.strictEqual(m.byId.b.cls, 'lost'); assert.deepStrictEqual(m.unmatched, ['NO9']);
+  // 圖解區 COA＋BNP（檔名 KC03690）
+  const coa = 'KC0369 4\n    1 2701000.00000000216000.00000000\n    2 2701010.00000000216000.00000000\n    3 2701010.00000000216010.00000000\n    4 2701000.00000000216010.00000000\n';
+  const bnp = 'KC0369 1\n   1   0  1   4     1     2     3     4\n';
+  const g = Core.parseGraphic([{ path: 'x/KC03690.COA', bytes: Buffer.from(coa) }, { path: 'x/KC03690.BNP', bytes: Buffer.from(bnp) }])[0];
+  assert.strictEqual(g.section, 'KC0369'); assert.strictEqual(g.parcels.length, 1); assert.strictEqual(g.lines.length, 4);
+  assert.strictEqual(Core.buildGraphicLayer(g, 'TWD97').parcels[0].a, 100);
+  console.log('清查、圖解 COA 測試通過');
+}

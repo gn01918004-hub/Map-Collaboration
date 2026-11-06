@@ -1769,7 +1769,7 @@
   function planWriteBack(o) {
     var report = [], tol = o.tol || 0.06, warn = o.warn || 0.05, R = o.radius || 200, is67 = !!o.T;
     var toSys = function (y, x) { return is67 ? o.T.inverse(y, x) : [y, x]; };
-    var newPts = [], checks = [], skipped = [], autoHit = [], badCode = [];
+    var newPts = [], checks = [], skipped = [], autoHit = [], badCode = [], ctlFar = [];
     var d20recs = (o.d20 ? o.d20.records : []).filter(function (r) { return !r.deleted; }).map(function (r) {
       return { name: String(r.values.CTL_NAME || '').trim(), y: parseFloat(r.values.CTL_Y), x: parseFloat(r.values.CTL_X) };
     }).filter(function (r) { return r.name && isFinite(r.y) && isFinite(r.x); });
@@ -1794,6 +1794,12 @@
         } else {
           var hc = ctlNear(alias, m.y, m.x, 0.5);
           if (hc) { checks.push({ name: tag(hc.name), kind: '圖根點', meas: [m.y, m.x], known: hc.known, src: m.src }); return; }
+          var far = ctlNear(alias, m.y, m.x, 200);
+          if (far) { ctlFar.push('點 ' + nm + '（代碼 ' + m.code + '）跟圖根點 ' + far.name + ' 差 ' + fmtDist(far.d)); return; }
+        }
+        if (/^Q/.test(alias) && d20recs.some(function (r) { return r.name.toUpperCase() === alias; })) {
+          var r0 = d20recs.filter(function (r) { return r.name.toUpperCase() === alias; })[0], s0 = toSys(m.y, m.x);
+          ctlFar.push('點 ' + nm + '（代碼 ' + m.code + '）跟 D20 的 ' + r0.name + ' 差 ' + fmtDist(hypot(r0.y - s0[0], r0.x - s0[1]))); return;
         }
       }
       // 點名沒寫、但位置就在舊補點／圖根點上（10 公分內）→ 自動當成重測的舊點
@@ -1835,11 +1841,13 @@
         newPts.push({ kind: '補點', name: nm, code: '', y97: m.y, x97: m.x, src: m.src }); return;
       }
       var cd = m.code == null ? '' : String(m.code).trim();
-      if (cd && !/^\d{1,2}$/.test(cd)) { badCode.push(nm + '（' + cd + '）'); cd = String(o.refCode || '11'); }
+      if (cd && !/^\d{1,2}$/.test(cd)) { badCode.push(nm + '（' + cd + '）'); return; }
       newPts.push({ kind: '參考點', name: nm, code: cd, y97: m.y, x97: m.x, src: m.src });
     });
+    if (ctlFar.length) report.push(['warn', '代碼指的舊點位置對不上（差超過 50 公分，可能點位已被破壞或測錯點），不寫入、也不拿來修正，請確認：' + ctlFar.join('、') + '；如果是新設的點，參考點請把代碼改成 00～99，補點請把點名改成 Q 開頭，再檢查一次']);
     if (autoHit.length) report.push(['info', '位置就在舊點上（10 公分內），自動當成重測舊點拿來檢核：' + autoHit.join('、')]);
-    if (badCode.length) report.push(['warn', '這些點的代碼不是數字編碼、也對不到舊點，寫成參考點時編碼先用 ' + (o.refCode || '11') + '：' + badCode.join('、')]);
+    var fixHint = '；如果是新設的點，參考點請把代碼改成 00～99，補點請把點名改成 Q 開頭，再檢查一次';
+    if (badCode.length) report.push(['warn', '這些點的代碼不是 00～99、也對不到舊點，先不寫入：' + badCode.join('、') + fixHint]);
     if (skipped.length) report.push(['info', '不寫入、也不是已知點：' + skipped.slice(0, 10).join('、') + (skipped.length > 10 ? '…' : '')]);
     // 補點：照補點清冊編號（97 坐標比，同一點不重複）
     var reg = (o.registry && o.registry.points) || [], next = (o.registry && o.registry.maxNum) || 0, assigned = [];
@@ -1895,17 +1903,117 @@
       newPts: newPts, maxNum: next, frame: lbl };
   }
 
+  // ───────────────────────── 圖根點清查（QGIS／資料庫 n_kc_ctl、kc_ct2 匯出）─────────────────────────
+  var SURVEY_CLS = { ok: '有效', param: '轉換參數點（有效）', plan: '預計作為轉換參數點', unknown: '狀態未知', lost: '已回報找不到（失效）', none: '未清查' };
+  function surveyClass(state, isPic) {
+    var st = String(state == null ? '' : state).trim();
+    if (/^[xX]$/.test(st)) return 'lost';
+    if (st === '?') return 'unknown';
+    if (st === '1') return 'plan';
+    if (st === '0') return /^(true|t|1|y|yes)$/i.test(String(isPic == null ? '' : isPic).trim()) ? 'param' : 'ok';
+    return 'unknown';
+  }
+  function csvSplit(l) {
+    var out = [], cur = '', q = false;
+    for (var i = 0; i < l.length; i++) {
+      var ch = l[i];
+      if (q) { if (ch === '"') { if (l[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true; else if (ch === ',' || ch === '\t') { out.push(cur); cur = ''; } else cur += ch;
+    }
+    out.push(cur); return out.map(function (v) { return v.trim(); });
+  }
+  /** 清查表（CSV 有標題列，或 GeoJSON）→ [{name, state, cls, isPic, lv, ps, time, y97, x97, ry, rx, corsys}] */
+  function parseCtlSurvey(text) {
+    var recs = [];
+    var t = String(text).replace(/^﻿/, '').trim();
+    if (/^\{/.test(t)) {
+      var gj = JSON.parse(t);
+      (gj.features || []).forEach(function (f) {
+        var p = Object.assign({}, f.properties || {});
+        if (f.geometry && f.geometry.type === 'Point' && f.geometry.coordinates) { p.__gx = f.geometry.coordinates[0]; p.__gy = f.geometry.coordinates[1]; }
+        recs.push(p);
+      });
+    } else {
+      var ls = lines(t).filter(function (l) { return l.trim(); });
+      if (ls.length < 2) return [];
+      var head = csvSplit(ls[0]);
+      ls.slice(1).forEach(function (l) { var v = csvSplit(l), o = {}; head.forEach(function (h, i) { o[h] = v[i]; }); recs.push(o); });
+    }
+    var pick = function (o, names) {
+      var ks = Object.keys(o);
+      for (var i = 0; i < names.length; i++) for (var j = 0; j < ks.length; j++) if (ks[j].toLowerCase() === names[i].toLowerCase() && o[ks[j]] !== '' && o[ks[j]] != null) return o[ks[j]];
+      return null;
+    };
+    var num = function (v) { return isNum(v) ? +v : null; };
+    var out = [];
+    recs.forEach(function (o) {
+      var name = pick(o, ['ptn', 'name', '點名', '點號', 'code', 'point_no']);
+      if (!name) return;
+      var st = pick(o, ['state', '狀態']), pic = pick(o, ['isPic', 'ispic']);
+      var y97 = num(pick(o, ['97y', '97y座標', '97Y座標'])), x97 = num(pick(o, ['97x', '97x座標', '97X座標']));
+      var ry = num(pick(o, ['realy', 'realY', 'y', 'Y', '公告y座標', '公告Y座標'])), rx = num(pick(o, ['realx', 'realX', 'x', 'X', '公告x座標', '公告X座標']));
+      if ((y97 == null || x97 == null) && o.__gx != null && o.__gy > 1e6) { y97 = o.__gy; x97 = o.__gx; }   // EPSG:3826 的點
+      if (ry != null && rx != null && isX(ry) && isY(rx)) { var tt = ry; ry = rx; rx = tt; }
+      if (y97 != null && x97 != null && isX(y97) && isY(x97)) { var t2 = y97; y97 = x97; x97 = t2; }
+      out.push({ name: String(name).trim(), state: st == null ? '' : String(st).trim(), cls: surveyClass(st, pic), isPic: pic, lv: pick(o, ['lv']),
+        ps: pick(o, ['ps', '1ps', '備註', 'comment']) || '', time: pick(o, ['timestamp', 'updatetime', 'time']) || '',
+        corsys: pick(o, ['corsys', '座標系統']) || '', y97: y97, x97: x97, ry: ry, rx: rx });
+    });
+    return out;
+  }
+  /** 清查結果對到平台的圖根點（同名，好幾個同名就看坐標最近） */
+  function matchCtlSurvey(controls, rows) {
+    var byName = {}; controls.forEach(function (c) { var k = c.name.toUpperCase(); (byName[k] = byName[k] || []).push(c); });
+    var res = {}, unmatched = [], far = [], counts = {};
+    rows.forEach(function (r) {
+      var cs = byName[r.name.toUpperCase()] || [];
+      if (!cs.length) { unmatched.push(r.name); return; }
+      var dist = function (c) {
+        var ds = [];
+        if (r.y97 != null) ds.push(hypot(c.y - r.y97, c.x - r.x97));
+        if (r.ry != null) { ds.push(hypot(c.y - r.ry, c.x - r.rx)); (c.raw || []).forEach(function (q) { ds.push(hypot(q[0] - r.ry, q[1] - r.rx)); }); }
+        return ds.length ? Math.min.apply(null, ds) : null;
+      };
+      var best = cs.map(function (c) { return { c: c, d: dist(c) }; }).sort(function (a, b) { return (a.d == null ? 1e12 : a.d) - (b.d == null ? 1e12 : b.d); })[0];
+      if (cs.length > 1 && best.d != null && best.d > 5) { far.push(r.name + '（最近 ' + fmtDist(best.d) + '）'); return; }
+      if (best.d != null && best.d > 5) far.push(r.name + '（坐標差 ' + fmtDist(best.d) + '，仍用點名對上）');
+      var prev = res[best.c.id];
+      if (prev && prev.time > r.time) return;
+      res[best.c.id] = { cls: r.cls, label: SURVEY_CLS[r.cls], state: r.state, ps: r.ps, time: r.time, isPic: r.isPic, d: best.d };
+    });
+    Object.keys(res).forEach(function (k) { counts[res[k].cls] = (counts[res[k].cls] || 0) + 1; });
+    return { byId: res, unmatched: unmatched, far: far, counts: counts };
+  }
+
   // ───────────────────────── 圖解區（D2B／D2C／D2D，只當參考圖層） ─────────────────────────
   /** 讀圖解區的 D2C（點）、D2D（線）、D2B（地號邊界）→ 每段一份 */
   function parseGraphic(files) {
     var by = {};
     files.forEach(function (f) {
-      var e = extName(f.path); if (!/^D2[BCD]$/.test(e)) return;
-      var sec = sectionOf(f.path) || baseName(f.path).toUpperCase();
+      var e = extName(f.path); if (!/^(D2[BCD]|COA|BNP|PAR)$/.test(e)) return;
+      // 圖解檔名常是 KC03690（段號後多一碼）→ KC0369
+      var m = /^([A-Z]{2})(\d{4})\d?$/i.exec(baseName(f.path));
+      var sec = m ? (m[1] + m[2]).toUpperCase() : (sectionOf(f.path) || baseName(f.path).toUpperCase());
       (by[sec] = by[sec] || {})[e] = f;
     });
     return Object.keys(by).sort().map(function (sec) {
       var g = by[sec], out = { section: sec, pts: {}, lines: [], parcels: [], files: Object.keys(g).sort() };
+      if (g.COA && !g.D2C) {   // 數值檔格式的圖解（COA／BNP／PAR）
+        out.pts = parseCoa(decode(g.COA.bytes));
+        if (g.BNP) {
+          var bn = parseBnp(decode(g.BNP.bytes)), seen = {};
+          bn.order.forEach(function (k) {
+            var n = bn.map[k].filter(function (x) { return out.pts[x]; });
+            if (n.length >= 3) out.parcels.push({ k: k, n: n });
+            for (var i = 0; i < n.length; i++) {
+              var a = n[i], b = n[(i + 1) % n.length], kk = a < b ? a + '|' + b : b + '|' + a;
+              if (a !== b && !seen[kk]) { seen[kk] = 1; out.lines.push([a, b]); }
+            }
+          });
+        }
+        if (!g.BNP) out.error = '少了 BNP（地號邊界）';
+        return out;
+      }
       if (!g.D2C) { out.error = '少了 D2C（坐標）'; return out; }
       parseDbfRaw(g.D2C.bytes).records.forEach(function (r) {
         var v = r.values, y = parseFloat(v.COT_Y), x = parseFloat(v.COT_X);
@@ -1952,8 +2060,8 @@
     return { datum: datum, hit97: h97, hit67: h67 };
   }
   /** 圖解區 → 地圖用的資料（經緯度）。67 用概略公式換（圖解本身誤差就有幾公尺） */
-  function buildGraphicLayer(g, datum) {
-    var to97 = datum === 'TWD67' ? function (p) { return twd67to97(p[0], p[1]); } : function (p) { return p; };
+  function buildGraphicLayer(g, datum, T) {
+    var to97 = datum !== 'TWD67' ? function (p) { return p; } : T ? function (p) { return T.apply(p[0], p[1]); } : function (p) { return twd67to97(p[0], p[1]); };
     var LL = {}, r7 = function (v) { return Math.round(v * 1e7) / 1e7; };
     Object.keys(g.pts).forEach(function (k) { var q = to97(g.pts[k]); var l = tm2ToLatLng(q[0], q[1]); LL[k] = [r7(l[0]), r7(l[1])]; });
     var lines = []; g.lines.forEach(function (l) { var a = LL[l[0]], b = LL[l[1]]; lines.push(a[0], a[1], b[0], b[1]); });
@@ -2083,7 +2191,7 @@
     matchChecks: matchChecks, classifyChecks: classifyChecks, addSupplement: addSupplement,
     localFit: localFit, planWriteBack: planWriteBack, parseDbfRaw: parseDbfRaw, appendDbf: appendDbf, planDbfWrite: planDbfWrite, buildDbfFiles: buildDbfFiles,
     parseGnssCsv: parseGnssCsv, parseNikonRaw: parseNikonRaw, tm2Scale: tm2Scale,
-    codeAlias: codeAlias, parseGraphic: parseGraphic, graphicDatum: graphicDatum, buildGraphicLayer: buildGraphicLayer,
+    codeAlias: codeAlias, parseGraphic: parseGraphic, parseCtlSurvey: parseCtlSurvey, matchCtlSurvey: matchCtlSurvey, SURVEY_CLS: SURVEY_CLS, graphicDatum: graphicDatum, buildGraphicLayer: buildGraphicLayer,
     parseParamInp: parseParamInp, parseCtlFix: parseCtlFix, sectionNums: sectionNums, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED

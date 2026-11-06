@@ -178,14 +178,25 @@
         <div id="chkList"></div>
       </div>
       <div class="card">
+        <h3>圖根點清查狀態</h3>
+        <p class="small">在 QGIS 對「圖根點」（n_kc_ctl）、「補點」（kc_ct2）圖層按右鍵 → 匯出 → 另存圖徵，存成 <b>CSV</b> 或 <b>GeoJSON</b> 放進來（要有 ptn、state 欄）。
+          地圖上圖根點會換顏色：<b style="color:#13a454">● 有效</b>、<b style="color:#0ea5b7">● 預計作為轉換參數點</b>、<b style="color:#e6a700">● 狀態未知</b>、
+          <b style="color:#98a2b3">● 已回報找不到</b>（預設不顯示，地圖右下「顯示」可打開）、<b style="color:#1f6feb">● 未清查</b>。外業包不放找不到的點，有效的排前面。</p>
+        <button id="svyPick" class="pick">選 CSV / GeoJSON</button>
+        <button id="svyClear" class="ghost">清掉</button>
+        <input type="file" id="svyFile" accept=".csv,.txt,.geojson,.json,.zip" multiple hidden>
+        <div id="svyMsg"></div>
+        <div id="svyInfo"></div>
+      </div>
+      <div class="card">
         <h3>圖解區（參考圖層）</h3>
-        <p class="small">把圖解區的 <b>KCxxxx.D2B、D2C、D2D</b>（資料夾或 zip）放進來，地圖上會用<b style="color:#8a5a00">咖啡色虛線</b>畫出來、也可以搜尋地號。
+        <p class="small">把圖解區的 <b>COA＋BNP（＋PAR）</b>（例如 KC03690.COA）或重測系統的 <b>D2B、D2C、D2D</b>（資料夾或 zip）放進來，地圖上會用<b style="color:#8a5a00">咖啡色虛線</b>畫出來、也可以搜尋地號。
           圖解區是紙圖數化的，位置誤差可能有幾公尺，<b>只當參考</b>，不參與換算和檢核。有地號的版本（D2B 有段號地號）才能點選、搜尋。</p>
         <div class="row"><label style="margin:0">坐標系統</label><select id="grDatum"><option value="auto">自動判斷（跟旁邊數值區比）</option><option value="TWD67">TWD67</option><option value="TWD97">TWD97</option></select></div>
         <button id="grPickDir" class="pick">選資料夾</button>
         <button id="grPickFile" class="pick">選 zip / 檔案</button>
         <input type="file" id="grDir" webkitdirectory multiple hidden>
-        <input type="file" id="grFile" accept=".zip,.d2b,.d2c,.d2d,.D2B,.D2C,.D2D" multiple hidden>
+        <input type="file" id="grFile" accept=".zip,.coa,.bnp,.par,.COA,.BNP,.PAR,.d2b,.d2c,.d2d,.D2B,.D2C,.D2D" multiple hidden>
         <div id="grMsg"></div>
         <div id="grList"></div>
       </div>
@@ -267,6 +278,7 @@
       <label><input type="checkbox" data-layer="field" checked> <span class="sym tri"></span> 補點</label>
       <label><input type="checkbox" data-layer="ref" checked> <span class="sym sq"></span> 參考點</label>
       <label><input type="checkbox" data-layer="ctl" checked> <span class="sym dot"></span> 圖根點</label>
+      <label><input type="checkbox" data-layer="lost"> <span class="sym dot" style="background:#98a2b3"></span> 找不到的圖根點</label>
       <label><input type="checkbox" data-layer="bad" checked> <span class="sym warn">!</span> 坐標不符</label>
       <label><input type="checkbox" data-layer="links" checked> <span class="sym line"></span> 設站連線</label>
       <label><input type="checkbox" data-layer="checks" checked> <span class="sym arrow">➚</span> 檢核點（實測差）</label>

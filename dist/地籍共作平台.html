@@ -1021,14 +1021,25 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
         <div id="chkList"></div>
       </div>
       <div class="card">
+        <h3>圖根點清查狀態</h3>
+        <p class="small">在 QGIS 對「圖根點」（n_kc_ctl）、「補點」（kc_ct2）圖層按右鍵 → 匯出 → 另存圖徵，存成 <b>CSV</b> 或 <b>GeoJSON</b> 放進來（要有 ptn、state 欄）。
+          地圖上圖根點會換顏色：<b style="color:#13a454">● 有效</b>、<b style="color:#0ea5b7">● 預計作為轉換參數點</b>、<b style="color:#e6a700">● 狀態未知</b>、
+          <b style="color:#98a2b3">● 已回報找不到</b>（預設不顯示，地圖右下「顯示」可打開）、<b style="color:#1f6feb">● 未清查</b>。外業包不放找不到的點，有效的排前面。</p>
+        <button id="svyPick" class="pick">選 CSV / GeoJSON</button>
+        <button id="svyClear" class="ghost">清掉</button>
+        <input type="file" id="svyFile" accept=".csv,.txt,.geojson,.json,.zip" multiple hidden>
+        <div id="svyMsg"></div>
+        <div id="svyInfo"></div>
+      </div>
+      <div class="card">
         <h3>圖解區（參考圖層）</h3>
-        <p class="small">把圖解區的 <b>KCxxxx.D2B、D2C、D2D</b>（資料夾或 zip）放進來，地圖上會用<b style="color:#8a5a00">咖啡色虛線</b>畫出來、也可以搜尋地號。
+        <p class="small">把圖解區的 <b>COA＋BNP（＋PAR）</b>（例如 KC03690.COA）或重測系統的 <b>D2B、D2C、D2D</b>（資料夾或 zip）放進來，地圖上會用<b style="color:#8a5a00">咖啡色虛線</b>畫出來、也可以搜尋地號。
           圖解區是紙圖數化的，位置誤差可能有幾公尺，<b>只當參考</b>，不參與換算和檢核。有地號的版本（D2B 有段號地號）才能點選、搜尋。</p>
         <div class="row"><label style="margin:0">坐標系統</label><select id="grDatum"><option value="auto">自動判斷（跟旁邊數值區比）</option><option value="TWD67">TWD67</option><option value="TWD97">TWD97</option></select></div>
         <button id="grPickDir" class="pick">選資料夾</button>
         <button id="grPickFile" class="pick">選 zip / 檔案</button>
         <input type="file" id="grDir" webkitdirectory multiple hidden>
-        <input type="file" id="grFile" accept=".zip,.d2b,.d2c,.d2d,.D2B,.D2C,.D2D" multiple hidden>
+        <input type="file" id="grFile" accept=".zip,.coa,.bnp,.par,.COA,.BNP,.PAR,.d2b,.d2c,.d2d,.D2B,.D2C,.D2D" multiple hidden>
         <div id="grMsg"></div>
         <div id="grList"></div>
       </div>
@@ -1110,6 +1121,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
       <label><input type="checkbox" data-layer="field" checked> <span class="sym tri"></span> 補點</label>
       <label><input type="checkbox" data-layer="ref" checked> <span class="sym sq"></span> 參考點</label>
       <label><input type="checkbox" data-layer="ctl" checked> <span class="sym dot"></span> 圖根點</label>
+      <label><input type="checkbox" data-layer="lost"> <span class="sym dot" style="background:#98a2b3"></span> 找不到的圖根點</label>
       <label><input type="checkbox" data-layer="bad" checked> <span class="sym warn">!</span> 坐標不符</label>
       <label><input type="checkbox" data-layer="links" checked> <span class="sym line"></span> 設站連線</label>
       <label><input type="checkbox" data-layer="checks" checked> <span class="sym arrow">➚</span> 檢核點（實測差）</label>
@@ -2925,7 +2937,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
   function planWriteBack(o) {
     var report = [], tol = o.tol || 0.06, warn = o.warn || 0.05, R = o.radius || 200, is67 = !!o.T;
     var toSys = function (y, x) { return is67 ? o.T.inverse(y, x) : [y, x]; };
-    var newPts = [], checks = [], skipped = [], autoHit = [], badCode = [];
+    var newPts = [], checks = [], skipped = [], autoHit = [], badCode = [], ctlFar = [];
     var d20recs = (o.d20 ? o.d20.records : []).filter(function (r) { return !r.deleted; }).map(function (r) {
       return { name: String(r.values.CTL_NAME || '').trim(), y: parseFloat(r.values.CTL_Y), x: parseFloat(r.values.CTL_X) };
     }).filter(function (r) { return r.name && isFinite(r.y) && isFinite(r.x); });
@@ -2950,6 +2962,12 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         } else {
           var hc = ctlNear(alias, m.y, m.x, 0.5);
           if (hc) { checks.push({ name: tag(hc.name), kind: '圖根點', meas: [m.y, m.x], known: hc.known, src: m.src }); return; }
+          var far = ctlNear(alias, m.y, m.x, 200);
+          if (far) { ctlFar.push('點 ' + nm + '（代碼 ' + m.code + '）跟圖根點 ' + far.name + ' 差 ' + fmtDist(far.d)); return; }
+        }
+        if (/^Q/.test(alias) && d20recs.some(function (r) { return r.name.toUpperCase() === alias; })) {
+          var r0 = d20recs.filter(function (r) { return r.name.toUpperCase() === alias; })[0], s0 = toSys(m.y, m.x);
+          ctlFar.push('點 ' + nm + '（代碼 ' + m.code + '）跟 D20 的 ' + r0.name + ' 差 ' + fmtDist(hypot(r0.y - s0[0], r0.x - s0[1]))); return;
         }
       }
       // 點名沒寫、但位置就在舊補點／圖根點上（10 公分內）→ 自動當成重測的舊點
@@ -2991,11 +3009,13 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         newPts.push({ kind: '補點', name: nm, code: '', y97: m.y, x97: m.x, src: m.src }); return;
       }
       var cd = m.code == null ? '' : String(m.code).trim();
-      if (cd && !/^\d{1,2}$/.test(cd)) { badCode.push(nm + '（' + cd + '）'); cd = String(o.refCode || '11'); }
+      if (cd && !/^\d{1,2}$/.test(cd)) { badCode.push(nm + '（' + cd + '）'); return; }
       newPts.push({ kind: '參考點', name: nm, code: cd, y97: m.y, x97: m.x, src: m.src });
     });
+    if (ctlFar.length) report.push(['warn', '代碼指的舊點位置對不上（差超過 50 公分，可能點位已被破壞或測錯點），不寫入、也不拿來修正，請確認：' + ctlFar.join('、') + '；如果是新設的點，參考點請把代碼改成 00～99，補點請把點名改成 Q 開頭，再檢查一次']);
     if (autoHit.length) report.push(['info', '位置就在舊點上（10 公分內），自動當成重測舊點拿來檢核：' + autoHit.join('、')]);
-    if (badCode.length) report.push(['warn', '這些點的代碼不是數字編碼、也對不到舊點，寫成參考點時編碼先用 ' + (o.refCode || '11') + '：' + badCode.join('、')]);
+    var fixHint = '；如果是新設的點，參考點請把代碼改成 00～99，補點請把點名改成 Q 開頭，再檢查一次';
+    if (badCode.length) report.push(['warn', '這些點的代碼不是 00～99、也對不到舊點，先不寫入：' + badCode.join('、') + fixHint]);
     if (skipped.length) report.push(['info', '不寫入、也不是已知點：' + skipped.slice(0, 10).join('、') + (skipped.length > 10 ? '…' : '')]);
     // 補點：照補點清冊編號（97 坐標比，同一點不重複）
     var reg = (o.registry && o.registry.points) || [], next = (o.registry && o.registry.maxNum) || 0, assigned = [];
@@ -3051,17 +3071,117 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       newPts: newPts, maxNum: next, frame: lbl };
   }
 
+  // ───────────────────────── 圖根點清查（QGIS／資料庫 n_kc_ctl、kc_ct2 匯出）─────────────────────────
+  var SURVEY_CLS = { ok: '有效', param: '轉換參數點（有效）', plan: '預計作為轉換參數點', unknown: '狀態未知', lost: '已回報找不到（失效）', none: '未清查' };
+  function surveyClass(state, isPic) {
+    var st = String(state == null ? '' : state).trim();
+    if (/^[xX]$/.test(st)) return 'lost';
+    if (st === '?') return 'unknown';
+    if (st === '1') return 'plan';
+    if (st === '0') return /^(true|t|1|y|yes)$/i.test(String(isPic == null ? '' : isPic).trim()) ? 'param' : 'ok';
+    return 'unknown';
+  }
+  function csvSplit(l) {
+    var out = [], cur = '', q = false;
+    for (var i = 0; i < l.length; i++) {
+      var ch = l[i];
+      if (q) { if (ch === '"') { if (l[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true; else if (ch === ',' || ch === '\t') { out.push(cur); cur = ''; } else cur += ch;
+    }
+    out.push(cur); return out.map(function (v) { return v.trim(); });
+  }
+  /** 清查表（CSV 有標題列，或 GeoJSON）→ [{name, state, cls, isPic, lv, ps, time, y97, x97, ry, rx, corsys}] */
+  function parseCtlSurvey(text) {
+    var recs = [];
+    var t = String(text).replace(/^﻿/, '').trim();
+    if (/^\{/.test(t)) {
+      var gj = JSON.parse(t);
+      (gj.features || []).forEach(function (f) {
+        var p = Object.assign({}, f.properties || {});
+        if (f.geometry && f.geometry.type === 'Point' && f.geometry.coordinates) { p.__gx = f.geometry.coordinates[0]; p.__gy = f.geometry.coordinates[1]; }
+        recs.push(p);
+      });
+    } else {
+      var ls = lines(t).filter(function (l) { return l.trim(); });
+      if (ls.length < 2) return [];
+      var head = csvSplit(ls[0]);
+      ls.slice(1).forEach(function (l) { var v = csvSplit(l), o = {}; head.forEach(function (h, i) { o[h] = v[i]; }); recs.push(o); });
+    }
+    var pick = function (o, names) {
+      var ks = Object.keys(o);
+      for (var i = 0; i < names.length; i++) for (var j = 0; j < ks.length; j++) if (ks[j].toLowerCase() === names[i].toLowerCase() && o[ks[j]] !== '' && o[ks[j]] != null) return o[ks[j]];
+      return null;
+    };
+    var num = function (v) { return isNum(v) ? +v : null; };
+    var out = [];
+    recs.forEach(function (o) {
+      var name = pick(o, ['ptn', 'name', '點名', '點號', 'code', 'point_no']);
+      if (!name) return;
+      var st = pick(o, ['state', '狀態']), pic = pick(o, ['isPic', 'ispic']);
+      var y97 = num(pick(o, ['97y', '97y座標', '97Y座標'])), x97 = num(pick(o, ['97x', '97x座標', '97X座標']));
+      var ry = num(pick(o, ['realy', 'realY', 'y', 'Y', '公告y座標', '公告Y座標'])), rx = num(pick(o, ['realx', 'realX', 'x', 'X', '公告x座標', '公告X座標']));
+      if ((y97 == null || x97 == null) && o.__gx != null && o.__gy > 1e6) { y97 = o.__gy; x97 = o.__gx; }   // EPSG:3826 的點
+      if (ry != null && rx != null && isX(ry) && isY(rx)) { var tt = ry; ry = rx; rx = tt; }
+      if (y97 != null && x97 != null && isX(y97) && isY(x97)) { var t2 = y97; y97 = x97; x97 = t2; }
+      out.push({ name: String(name).trim(), state: st == null ? '' : String(st).trim(), cls: surveyClass(st, pic), isPic: pic, lv: pick(o, ['lv']),
+        ps: pick(o, ['ps', '1ps', '備註', 'comment']) || '', time: pick(o, ['timestamp', 'updatetime', 'time']) || '',
+        corsys: pick(o, ['corsys', '座標系統']) || '', y97: y97, x97: x97, ry: ry, rx: rx });
+    });
+    return out;
+  }
+  /** 清查結果對到平台的圖根點（同名，好幾個同名就看坐標最近） */
+  function matchCtlSurvey(controls, rows) {
+    var byName = {}; controls.forEach(function (c) { var k = c.name.toUpperCase(); (byName[k] = byName[k] || []).push(c); });
+    var res = {}, unmatched = [], far = [], counts = {};
+    rows.forEach(function (r) {
+      var cs = byName[r.name.toUpperCase()] || [];
+      if (!cs.length) { unmatched.push(r.name); return; }
+      var dist = function (c) {
+        var ds = [];
+        if (r.y97 != null) ds.push(hypot(c.y - r.y97, c.x - r.x97));
+        if (r.ry != null) { ds.push(hypot(c.y - r.ry, c.x - r.rx)); (c.raw || []).forEach(function (q) { ds.push(hypot(q[0] - r.ry, q[1] - r.rx)); }); }
+        return ds.length ? Math.min.apply(null, ds) : null;
+      };
+      var best = cs.map(function (c) { return { c: c, d: dist(c) }; }).sort(function (a, b) { return (a.d == null ? 1e12 : a.d) - (b.d == null ? 1e12 : b.d); })[0];
+      if (cs.length > 1 && best.d != null && best.d > 5) { far.push(r.name + '（最近 ' + fmtDist(best.d) + '）'); return; }
+      if (best.d != null && best.d > 5) far.push(r.name + '（坐標差 ' + fmtDist(best.d) + '，仍用點名對上）');
+      var prev = res[best.c.id];
+      if (prev && prev.time > r.time) return;
+      res[best.c.id] = { cls: r.cls, label: SURVEY_CLS[r.cls], state: r.state, ps: r.ps, time: r.time, isPic: r.isPic, d: best.d };
+    });
+    Object.keys(res).forEach(function (k) { counts[res[k].cls] = (counts[res[k].cls] || 0) + 1; });
+    return { byId: res, unmatched: unmatched, far: far, counts: counts };
+  }
+
   // ───────────────────────── 圖解區（D2B／D2C／D2D，只當參考圖層） ─────────────────────────
   /** 讀圖解區的 D2C（點）、D2D（線）、D2B（地號邊界）→ 每段一份 */
   function parseGraphic(files) {
     var by = {};
     files.forEach(function (f) {
-      var e = extName(f.path); if (!/^D2[BCD]$/.test(e)) return;
-      var sec = sectionOf(f.path) || baseName(f.path).toUpperCase();
+      var e = extName(f.path); if (!/^(D2[BCD]|COA|BNP|PAR)$/.test(e)) return;
+      // 圖解檔名常是 KC03690（段號後多一碼）→ KC0369
+      var m = /^([A-Z]{2})(\d{4})\d?$/i.exec(baseName(f.path));
+      var sec = m ? (m[1] + m[2]).toUpperCase() : (sectionOf(f.path) || baseName(f.path).toUpperCase());
       (by[sec] = by[sec] || {})[e] = f;
     });
     return Object.keys(by).sort().map(function (sec) {
       var g = by[sec], out = { section: sec, pts: {}, lines: [], parcels: [], files: Object.keys(g).sort() };
+      if (g.COA && !g.D2C) {   // 數值檔格式的圖解（COA／BNP／PAR）
+        out.pts = parseCoa(decode(g.COA.bytes));
+        if (g.BNP) {
+          var bn = parseBnp(decode(g.BNP.bytes)), seen = {};
+          bn.order.forEach(function (k) {
+            var n = bn.map[k].filter(function (x) { return out.pts[x]; });
+            if (n.length >= 3) out.parcels.push({ k: k, n: n });
+            for (var i = 0; i < n.length; i++) {
+              var a = n[i], b = n[(i + 1) % n.length], kk = a < b ? a + '|' + b : b + '|' + a;
+              if (a !== b && !seen[kk]) { seen[kk] = 1; out.lines.push([a, b]); }
+            }
+          });
+        }
+        if (!g.BNP) out.error = '少了 BNP（地號邊界）';
+        return out;
+      }
       if (!g.D2C) { out.error = '少了 D2C（坐標）'; return out; }
       parseDbfRaw(g.D2C.bytes).records.forEach(function (r) {
         var v = r.values, y = parseFloat(v.COT_Y), x = parseFloat(v.COT_X);
@@ -3108,8 +3228,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     return { datum: datum, hit97: h97, hit67: h67 };
   }
   /** 圖解區 → 地圖用的資料（經緯度）。67 用概略公式換（圖解本身誤差就有幾公尺） */
-  function buildGraphicLayer(g, datum) {
-    var to97 = datum === 'TWD67' ? function (p) { return twd67to97(p[0], p[1]); } : function (p) { return p; };
+  function buildGraphicLayer(g, datum, T) {
+    var to97 = datum !== 'TWD67' ? function (p) { return p; } : T ? function (p) { return T.apply(p[0], p[1]); } : function (p) { return twd67to97(p[0], p[1]); };
     var LL = {}, r7 = function (v) { return Math.round(v * 1e7) / 1e7; };
     Object.keys(g.pts).forEach(function (k) { var q = to97(g.pts[k]); var l = tm2ToLatLng(q[0], q[1]); LL[k] = [r7(l[0]), r7(l[1])]; });
     var lines = []; g.lines.forEach(function (l) { var a = LL[l[0]], b = LL[l[1]]; lines.push(a[0], a[1], b[0], b[1]); });
@@ -3239,7 +3359,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     matchChecks: matchChecks, classifyChecks: classifyChecks, addSupplement: addSupplement,
     localFit: localFit, planWriteBack: planWriteBack, parseDbfRaw: parseDbfRaw, appendDbf: appendDbf, planDbfWrite: planDbfWrite, buildDbfFiles: buildDbfFiles,
     parseGnssCsv: parseGnssCsv, parseNikonRaw: parseNikonRaw, tm2Scale: tm2Scale,
-    codeAlias: codeAlias, parseGraphic: parseGraphic, graphicDatum: graphicDatum, buildGraphicLayer: buildGraphicLayer,
+    codeAlias: codeAlias, parseGraphic: parseGraphic, parseCtlSurvey: parseCtlSurvey, matchCtlSurvey: matchCtlSurvey, SURVEY_CLS: SURVEY_CLS, graphicDatum: graphicDatum, buildGraphicLayer: buildGraphicLayer,
     parseParamInp: parseParamInp, parseCtlFix: parseCtlFix, sectionNums: sectionNums, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED
@@ -3407,7 +3527,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         S.index = a[0]; S.controls = a[1]; S.ctlByName = {}; S.trans = {};
         S.controls.forEach(function (p) { var k = p.name.toUpperCase(); (S.ctlByName[k] = S.ctlByName[k] || []).push(p); });
         S.index.sections.forEach(function (s) { if (s.tparams) S.trans[s.section] = Core.Transform.from(s.tparams); });
-        return S.index;
+        return applySurvey().then(function () { return S.index; });
       });
     }, function () { S.index = null; S.controls = []; S.ctlByName = {}; S.trans = {}; return null; });
   }
@@ -3506,12 +3626,38 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report }; });
     });
   }
+  // ── 圖根點清查（從 QGIS／資料庫匯出的 CSV、GeoJSON）──
+  function applySurvey() {
+    return readJson('底圖/圖根清查.json').then(function (d) {
+      var m = Core.matchCtlSurvey(S.controls, d.rows);
+      S.controls.forEach(function (c) { c.sv = m.byId[c.id] || null; });
+      S.survey = { at: d.at, files: d.files, rows: d.rows.length, counts: m.counts, unmatched: m.unmatched, far: m.far };
+    }, function () { S.survey = null; S.controls.forEach(function (c) { c.sv = null; }); });
+  }
+  function uploadSurvey(body) {
+    return Core.expandZips(body.items).then(function (files) {
+      var rows = [], used = [];
+      files.forEach(function (f) {
+        if (!/\.(csv|txt|geojson|json)$/i.test(f.path)) return;
+        var r = Core.parseCtlSurvey(Core.decode(f.bytes));
+        if (r.length) { rows = rows.concat(r); used.push(Core.fileName(f.path) + '（' + r.length + ' 筆）'); }
+      });
+      if (!rows.length) throw new Error('沒讀到清查資料：請在 QGIS 對「圖根點」圖層按右鍵 → 匯出 → 另存圖徵為 CSV（或 GeoJSON），要有 ptn、state 欄');
+      return writeJson('底圖/圖根清查.json', { at: Date.now(), files: used, rows: rows }).then(applySurvey).then(function () {
+        var c = S.survey.counts, rep = [['ok', '讀了 ' + used.join('、') + '，對到平台圖根點 ' + Object.keys(c).reduce(function (a, k) { return a + c[k]; }, 0) + ' 點：' +
+          Object.keys(c).map(function (k) { return Core.SURVEY_CLS[k] + ' ' + c[k]; }).join('、')]];
+        if (S.survey.unmatched.length) rep.push(['warn', '平台沒有這些點名（' + S.survey.unmatched.length + '）：' + S.survey.unmatched.slice(0, 30).join('、') + (S.survey.unmatched.length > 30 ? '…' : '')]);
+        if (S.survey.far.length) rep.push(['warn', '同名但坐標對不上（' + S.survey.far.length + '）：' + S.survey.far.slice(0, 20).join('、') + (S.survey.far.length > 20 ? '…' : '')]);
+        return { ok: true, report: rep };
+      });
+    });
+  }
   // ── 圖解區（只當參考圖層，不參與換算） ──
   function graphicList() { return readJson('底圖/圖解/清單.json').catch(function () { return []; }); }
   function uploadGraphic(body) {
     return Core.expandZips(body.items).then(function (files) {
       var gs = Core.parseGraphic(files), report = [];
-      if (!gs.length) throw new Error('沒找到圖解區的 D2C／D2D／D2B 檔（檔名要像 KC0336.D2C）');
+      if (!gs.length) throw new Error('沒找到圖解區的檔案（COA＋BNP，例如 KC03690.COA／BNP；或重測系統的 D2B／D2C／D2D）');
       return graphicList().then(function (list) {
         var p = Promise.resolve();
         gs.forEach(function (g) {
@@ -3532,7 +3678,17 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
               var datum = want || dt.datum || 'TWD67';
               var how = want ? '你指定 ' + want : dt.datum ? '自動判斷（跟旁邊數值區比：當 97 有 ' + dt.hit97 + ' 點對得上、當 67 有 ' + dt.hit67 + ' 點）' : '旁邊沒有數值區可以比，先當 TWD67';
               if (want && dt.datum && want !== dt.datum) report.push(['warn', g.section + '：你指定 ' + want + '，但跟旁邊數值區比起來比較像 ' + dt.datum + '（' + dt.hit97 + ' 比 ' + dt.hit67 + '），請確認']);
-              var layer = Core.buildGraphicLayer(g, datum);
+              var T = null;
+              if (datum === 'TWD67') {   // 用最近的 67 段的轉換參數（比概略公式準約半公尺）
+                var c0 = Core.tm2ToLatLng((y0 + y1) / 2 - 210, (x0 + x1) / 2 + 828), best = null;
+                (S.index && S.index.sections || []).forEach(function (s) {
+                  if (!s.bbox || !S.trans[s.section]) return;
+                  var d = Math.hypot((s.bbox[0] + s.bbox[2]) / 2 - c0[0], (s.bbox[1] + s.bbox[3]) / 2 - c0[1]);
+                  if (!best || d < best.d) best = { s: s.section, d: d };
+                });
+                if (best) { T = S.trans[best.s]; how += '；用 ' + secName(best.s) + ' 的轉換參數換到 97'; }
+              }
+              var layer = Core.buildGraphicLayer(g, datum, T);
               layer.how = how; layer.at = Date.now(); layer.files = g.files;
               report.push(['ok', secName(g.section) + '：' + layer.nLines + ' 條線、' + layer.parcels.length + ' 筆地號，坐標 ' + datum + '（' + how + '）' +
                 (layer.parcels.length ? '' : '；沒有地號資料（D2B 沒有段號地號），只能當底圖看')]);
@@ -3649,7 +3805,10 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         });
         var near = function (y, x) { return pts.some(function (q) { return Math.hypot(q[0] - y, q[1] - x) <= R; }); };
         var head = [];
-        S.controls.forEach(function (c) { if (c.status === 'ok' && c.datum !== '?' && near(c.y, c.x)) head.push({ name: c.name, y: c.y, x: c.x, kind: '圖根點' }); });
+        var lost = [], rank = { param: 0, ok: 0, plan: 1, unknown: 2, none: 3 };
+        S.controls.filter(function (c) { return c.status === 'ok' && c.datum !== '?' && near(c.y, c.x); })
+          .sort(function (a, b) { return rank[a.sv ? a.sv.cls : 'none'] - rank[b.sv ? b.sv.cls : 'none']; })
+          .forEach(function (c) { if (c.sv && c.sv.cls === 'lost') { lost.push(c.name); return; } head.push({ name: c.name, y: c.y, x: c.x, kind: '圖根點' }); });
         return fieldData().then(function (fd) {
           fd.points.filter(function (p) { return p.kind === '補點' && near(p.y, p.x); }).forEach(function (p) { head.push({ name: p.name, y: p.y, x: p.x, kind: '補點' }); });
           var all = head.concat(rows), out = [], seen2 = {};
@@ -3657,7 +3816,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           var fn = '外業包_' + secs.map(function (x) { return x.slice(2); }).join('_') + '_' + want.map(function (w) { return w.key; }).slice(0, 5).join('_') + '.csv';
           download(fn, out.join('\r\n') + '\r\n', 'text/csv');
           var cnt = {}; all.forEach(function (r) { cnt[r.kind] = (cnt[r.kind] || 0) + 1; });
-          return { ok: true, file: fn, counts: cnt };
+          return { ok: true, file: fn, counts: cnt, lost: lost };
         });
       });
     });
@@ -3970,7 +4129,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {},
           param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3,
           case_tol_cm: S.cfg.case_tol_cm, case_warn_cm: S.cfg.case_warn_cm, case_radius_m: S.cfg.case_radius_m };
-      }).then(function (info) { return graphicList().then(function (g) { info.graphic = g; return info; }); });
+      }).then(function (info) { info.survey = S.survey; return graphicList().then(function (g) { info.graphic = g; return info; }); });
     }
     if (path === '/api/controls') return Promise.resolve(S.controls);
     if (path === '/api/ctl_issues') return S.issues ? Promise.resolve(S.issues) : readJson(vpath('ctl_issues.json')).then(function (d) { S.issues = d; return d; });
@@ -4046,6 +4205,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     if (path === '/api/writeback/commit') return writeBackCommit(body);
     if (path === '/api/checks/approve') return loadCfg().then(function () { return setApproved(body); });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
+    if (path === '/api/ctlsurvey/upload') return loadBase().then(function () { return uploadSurvey(body); });
+    if (path === '/api/ctlsurvey/clear') return dirOf('底圖').then(function (d) { return d.removeEntry('圖根清查.json'); }).catch(function () {}).then(applySurvey).then(function () { return { ok: true }; });
     if (path === '/api/graphic/upload') return loadCfg().then(function () { return uploadGraphic(body); });
     if (path === '/api/graphic/list') return graphicList();
     if ((m = /^\/api\/graphic\/([A-Z]{2}\d{4})$/i.exec(path))) return graphicData(m[1].toUpperCase());
@@ -4087,7 +4248,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.07-4';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-5';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -4138,7 +4299,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     field: L.layerGroup().addTo(map),
     hl: L.layerGroup().addTo(map)
   };
-  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true, graphic: true };
+  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true, graphic: true, lost: false };
 
   var S = { info: null, controls: [], field: null, sections: {}, secCache: {}, secLoading: {}, onlyWho: '' };
 
@@ -4279,6 +4440,9 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       '<tr><td>Y（縱）</td><td>' + f3(p.y) + '</td></tr><tr><td>X（橫）</td><td>' + f3(p.x) + '</td></tr>' +
       '<tr><td>出現在</td><td>' + esc(p.sections.map(secName).join('、')) + '（' + p.count + ' 次）</td></tr>' +
       (p.flags.length ? '<tr><td>註記碼</td><td>' + esc(p.flags.join(' ')) + '</td></tr>' : '') +
+      (p.sv ? '<tr><td>清查狀態</td><td><b style="color:' + (SV_COL[p.sv.cls] === '#98a2b3' ? '#667085' : SV_COL[p.sv.cls]) + '">' + esc(p.sv.label) + '</b>' +
+        (p.sv.time ? '<br><span class="small">' + esc(p.sv.time) + '</span>' : '') + (p.sv.ps ? '<br><span class="small">' + esc(p.sv.ps) + '</span>' : '') + '</td></tr>' :
+        (S.info && S.info.survey ? '<tr><td>清查狀態</td><td>未清查</td></tr>' : '')) +
       '<tr><td>坐標系統</td><td>' + (p.datum === 'TWD67' ? '原為 67，已換成 97' : p.datum === '?' ? '<b style="color:#d92d20">不確定</b>' : 'TWD97') + '</td></tr>' +
       (p.raw ? '<tr><td>CTL 原始值</td><td>' + p.raw.map(function (r) { return f3(r[0]) + ', ' + f3(r[1]); }).join('<br>') + '</td></tr>' : '') +
       (p.fix ? '<tr><td>格式修正</td><td class="small">' + esc(p.fix.join('、')) + '</td></tr>' : '') + '</table>';
@@ -4295,6 +4459,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
   }
   function copyBtn(n, y, x) { return '<button class="copy" data-copy="' + esc(n + ',' + f3(y) + ',' + f3(x)) + '">📋 複製坐標</button>'; }
   function tolM() { return ((S.info && S.info.tolerance_cm) || 2) / 100; }
+  // 清查狀態顏色：有效＝綠、轉換參數點＝深綠框、預計＝青、未知＝黃、找不到＝灰、沒清查＝藍
+  var SV_COL = { ok: '#13a454', param: '#13a454', plan: '#0ea5b7', unknown: '#e6a700', lost: '#98a2b3', none: '#1f6feb' };
   function refreshCtl() {
     layers.ctl.clearLayers();
     layers.clabel.clearLayers();
@@ -4304,8 +4470,10 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     S.controls.forEach(function (p) {
       if (!p.ll || n > 4000 || !vb.contains(p.ll)) return;
       n++;
-      var warn = p.notes && p.notes.length;
-      var m = L.circleMarker(p.ll, { renderer: renderer, radius: z >= 18 ? 6 : 4, color: '#fff', weight: 2, fillColor: warn ? '#7c8db5' : '#1f6feb', fillOpacity: 1 });
+      var warn = p.notes && p.notes.length, cls = p.sv ? p.sv.cls : (S.info && S.info.survey ? 'none' : '');
+      if (cls === 'lost' && !show.lost) return;
+      var col = SV_COL[cls] || (warn ? '#7c8db5' : '#1f6feb');
+      var m = L.circleMarker(p.ll, { renderer: renderer, radius: (z >= 18 ? 6 : 4) + (cls === 'ok' || cls === 'param' ? 1 : 0), color: cls === 'param' ? '#0b6b35' : '#fff', weight: 2, fillColor: col, fillOpacity: cls === 'lost' ? 0.6 : 1 });
       m.bindPopup(function () { return ctlPopup(p); });
       layers.ctl.addLayer(m);
       if (lab && n < 600) L.marker(p.ll, { interactive: false, icon: L.divIcon({ className: '', html: '<div class="clbl">' + esc(p.name) + '</div>', iconSize: [0, 0] }) }).addTo(layers.clabel);
@@ -4776,6 +4944,10 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     renderParams();
     renderChecks();
     renderGraphic();
+    var sv = S.info.survey;
+    $('svyInfo').innerHTML = sv ? '<div class="small">' + new Date(sv.at).toLocaleString() + ' 匯入（' + esc(sv.files.join('、')) + '）：' +
+      Object.keys(sv.counts).map(function (k) { return '<b style="color:' + SV_COL[k] + '">●</b> ' + esc(CLS_TXT[k]) + ' ' + sv.counts[k]; }).join('　') +
+      (sv.unmatched.length ? '<br>平台沒有的點名 ' + sv.unmatched.length + ' 個' : '') + '</div>' : '<div class="small">還沒匯入</div>';
     $('exNames').value = (i.param_exclude_names || []).join('\n');
     $('chkTol').value = i.check_tol_cm || 3;
     $('secNames').value = Object.keys(i.section_names || {}).map(function (k) { return k + '=' + i.section_names[k]; }).join('\n');
@@ -4800,6 +4972,22 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     });
   }
   $('issueType').onchange = drawIssues;
+  var CLS_TXT = { ok: '有效', param: '轉換參數點', plan: '預計作為轉換參數點', unknown: '狀態未知', lost: '找不到', none: '未清查' };
+  function surveyUpload(list) {
+    if (!list.length) return;
+    busy(true, '讀取清查資料…');
+    Local.fileListToItems(list).then(function (items) { return api('/api/ctlsurvey/upload', { items: items }); }).then(function (r) {
+      busy(false);
+      $('svyMsg').innerHTML = r.report.map(function (x) { return '<div class="msg ' + x[0] + '">' + esc(x[1]) + '</div>'; }).join('');
+      return api('/api/controls').then(function (c) { S.controls = c; return loadInfo(); }).then(function () { renderAdmin(); refreshAll(); });
+    }).catch(function (e) { busy(false); toast('失敗：' + e.message, 10000); });
+  }
+  $('svyPick').onclick = function () { $('svyFile').click(); };
+  $('svyFile').onchange = function () { surveyUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; })); this.value = ''; };
+  $('svyClear').onclick = function () {
+    if (!confirm('清掉匯入的清查狀態？')) return;
+    api('/api/ctlsurvey/clear', {}).then(function () { return api('/api/controls'); }).then(function (c) { S.controls = c; return loadInfo(); }).then(function () { renderAdmin(); refreshAll(); });
+  };
   function renderGraphic() {
     var gl = (S.info && S.info.graphic) || [];
     $('grList').innerHTML = gl.length ? '<table class="dt"><tr><th>段</th><th>內容</th><th>坐標</th><th></th></tr>' + gl.map(function (g) {
@@ -4964,7 +5152,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
   $('kitGo').onclick = function () {
     busy(true, '產生外業包…');
     api('/api/kit', { parcelsText: $('kitParcels').value, radius: $('kitRadius').value }).then(function (r) {
-      busy(false); $('kitMsg').innerHTML = '已下載 <b>' + esc(r.file) + '</b>：' + Object.keys(r.counts).map(function (k) { return k + ' ' + r.counts[k] + ' 點'; }).join('、');
+      busy(false); $('kitMsg').innerHTML = '已下載 <b>' + esc(r.file) + '</b>：' + Object.keys(r.counts).map(function (k) { return k + ' ' + r.counts[k] + ' 點'; }).join('、') +
+        (r.lost && r.lost.length ? '<div class="small">清查回報找不到、沒放進去的圖根點：' + esc(r.lost.join('、')) + '</div>' : '');
     }).catch(function (e) { busy(false); toast(e.message, 8000); });
   };
   var wb = { dir: null, files: [] };

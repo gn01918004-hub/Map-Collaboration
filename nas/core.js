@@ -502,17 +502,44 @@
       }
       q = [q[0] + dn, q[1] + de];
     }
+    if (this.supp) {   // 第二層：管理者確認過的外業檢核點（區域偏差修正）
+      var P = this.supp, sn = 0, se = 0;
+      for (var j = 0; j < P.pts.length; j++) {
+        var cc = 1 - hypot(y - P.pts[j][0], x - P.pts[j][1]) / P.a;
+        if (cc > 0) { sn += cc * P.an[j]; se += cc * P.ae[j]; }
+      }
+      q = [q[0] + sn, q[1] + se];
+    }
     return q;
   };
+  /**
+   * 第二層修正：外業檢核點（67 已知、97 實測）加進來做局部配置。
+   * pairs 有雜訊（權重比 GPS 圖根點低，不會硬拉到完全吻合）；anchors（GPS 共同點）修正量固定為 0，不動原本的參數。
+   */
+  function addSupplement(T, pairs, anchors, opts) {
+    opts = opts || {};
+    var a = opts.range || 500, noise = opts.noise == null ? 0.3 : opts.noise;
+    if (!pairs.length) return T;
+    var res = pairs.map(function (p) { var q = T.apply(p.n67, p.e67); return [p.n97 - q[0], p.e97 - q[1]]; });
+    // 所有 GPS 共同點都當固定點（只篩近的會讓稍遠的共同點被間接拉動）
+    var anc = (anchors || []).filter(function (c) { return !pairs.some(function (p) { return hypot(p.n67 - c[0], p.e67 - c[1]) < 0.01; }); });
+    var pts = pairs.map(function (p) { return [p.n67, p.e67]; }).concat(anc), n = pairs.length;
+    var C = pts.map(function (p, i) { return pts.map(function (q, j) { return Math.max(0, 1 - hypot(p[0] - q[0], p[1] - q[1]) / a) + (i === j ? (i < n ? noise : 1e-6) : 0); }); });
+    var an = solveN(C, res.map(function (r) { return r[0]; }).concat(anc.map(function () { return 0; })));
+    var ae = solveN(C, res.map(function (r) { return r[1]; }).concat(anc.map(function () { return 0; })));
+    if (an && ae) T.supp = { a: a, pts: pts, an: an, ae: ae, n: n };
+    return T;
+  }
   var baseDescribe = Transform.prototype.describe;
   Transform.prototype.describe = function () {
-    if (!this.gps) return baseDescribe.call(this);
-    return this.label + '：GPS 實測共同點 ' + this.n + ' 點，六參數標準誤差 ' + (this.sigma0 * 100).toFixed(1) + ' 公分' + (this.lsc ? '，加殘差內插（共同點上完全吻合）' : '');
+    var sup = this.supp ? '，加外業檢核點 ' + this.supp.n + ' 點修正' : '';
+    if (!this.gps) return baseDescribe.call(this) + sup;
+    return this.label + '：GPS 實測共同點 ' + this.n + ' 點，六參數標準誤差 ' + (this.sigma0 * 100).toFixed(1) + ' 公分' + (this.lsc ? '，加殘差內插（共同點上完全吻合）' : '') + sup;
   };
   var baseToJSON = Transform.prototype.toJSON;
-  Transform.prototype.toJSON = function () { var o = baseToJSON.call(this); if (this.lsc) o.lsc = this.lsc; if (this.gps) { o.gps = true; o.sigma0 = this.sigma0; } return o; };
+  Transform.prototype.toJSON = function () { var o = baseToJSON.call(this); if (this.lsc) o.lsc = this.lsc; if (this.supp) o.supp = this.supp; if (this.gps) { o.gps = true; o.sigma0 = this.sigma0; } return o; };
   var baseFrom = Transform.from;
-  Transform.from = function (d) { var t = baseFrom(d); if (d.lsc) t.lsc = d.lsc; if (d.gps) { t.gps = true; t.sigma0 = d.sigma0; } return t; };
+  Transform.from = function (d) { var t = baseFrom(d); if (d.lsc) t.lsc = d.lsc; if (d.supp) t.supp = d.supp; if (d.gps) { t.gps = true; t.sigma0 = d.sigma0; } return t; };
 
   /**
    * 參數檔品質檢查：殘差、留一法（拿掉一點後用其他點推它，看差多少）、
@@ -749,6 +776,20 @@
         }
         out.gpsCheck[s] = checkParams(choice.pts, inParcel);
       });
+      // 第二層：管理者確認過的外業檢核點，加在各段轉換上（每段自己一份，不動共用的參數）
+      out.suppCount = {};
+      if (opts.supp && opts.supp.length) {
+        eff67.forEach(function (s) {
+          if (!trans[s] || !okPts[s] || !okPts[s].length) return;
+          var b = bbox(okPts[s], 500);
+          var mine = opts.supp.filter(function (p) { return p.n67 != null && p.n67 >= b[0] && p.n67 <= b[1] && p.e67 >= b[2] && p.e67 <= b[3]; });
+          if (!mine.length) return;
+          var T = Transform.from(trans[s].toJSON()), ch = out.gpsChoice[s];
+          var anchors = ch ? gpsSets.filter(function (x) { return x.file === ch.file; })[0].pts.filter(function (p) { return p.wt > 0; }).map(function (p) { return [p.n67, p.e67]; }) : [];
+          trans[s] = addSupplement(T, mine, anchors, { range: opts.suppRange || 500 });
+          out.suppCount[s] = mine.length;
+        });
+      }
       progress('組地號、換算坐標…');
       return tick();
     }).then(function () {
@@ -789,7 +830,7 @@
         var entry = { section: sec, parcels: parcels.length, points: Object.keys(coaRaw[sec]).length, missing: missing,
           files: Object.keys(f).sort(), datum: e67 ? 'TWD67' : 'TWD97',
           datum_src: e67 ? (opts.sec67 ? '管理者指定' : src.join('、')) : '',
-          transform: T ? T.describe() + (T === glob ? '（' + NO_NEIGHBOUR + '）' : '') : '', tparams: T ? T.toJSON() : null };
+          transform: T ? T.describe() + (T === glob ? '（' + NO_NEIGHBOUR + '）' : '') : '', tparams: T ? T.toJSON() : null, supp: out.suppCount[sec] || 0 };
         var gch = out.gpsChoice[sec];
         if (gc) entry.gps = { file: gch.file, candidates: gch.candidates, isolated: gc.isolated, excluded: gc.excluded,
           shared: Object.keys(out.gpsChoice).filter(function (o) { return o !== sec && out.gpsChoice[o].file === gch.file; }), n: gc.n, sigma0: gc.sigma0, suspects: gc.suspects, edges: gc.edges, classes: gc.classes, far: gc.far,
@@ -1220,7 +1261,8 @@
     }
     Object.keys(secData).sort().forEach(function (s) { secData[s].finish(); });
     if (!Object.keys(groups).length) report.push(['error', '找不到重測系統的資料（需要 KCxxxx.D20、D14、D13、L02 或 B90 等檔案）']);
-    return { points: points, links: links, used: used, parcels: parcels, report: report, sections: Object.keys(groups).sort() };
+    var bnd = {}; Object.keys(secData).forEach(function (k) { bnd[k] = secData[k].bnd; });
+    return { points: points, links: links, used: used, parcels: parcels, report: report, sections: Object.keys(groups).sort(), bnd: bnd };
   }
 
   /** 補點清冊：某位測量員全部上傳（不含已刪除）的補點；最大編號連已刪除的也算，號碼不會重複用 */
@@ -1323,6 +1365,73 @@
     return res;
   }
 
+  // ───────────────────────── 第二層：外業檢核點 ─────────────────────────
+  /**
+   * 實測檢核點（TWD97，點名,Y,X）對應到已知的 67 點：
+   *   數字點號 → 這次上傳 D14 的界址點（這段的系統坐標）；其他點名 → 圖根點（CTL 整理結果）
+   * 回傳 { checks:[{name, kind, section, n67, e67, conv:[y,x], meas:[y,x], dn, de, d}], unmatched:[名] }
+   */
+  function matchChecks(meas, ctx) {
+    var checks = [], unmatched = [];
+    meas.forEach(function (m) {
+      var hit = null;
+      if (/^\d+(\.0+)?$/.test(m.name)) {
+        var num = String(parseInt(m.name, 10));
+        (ctx.sections || []).some(function (sec) {
+          var c = ctx.bnd && ctx.bnd[sec] && ctx.bnd[sec][num];
+          if (!c) return false;
+          var T = ctx.trans[sec], q = T && coordStatus(c[0], c[1]) === 'ok' ? T.apply(c[0], c[1]) : c;
+          hit = { kind: '界址點', section: sec, n67: T ? c[0] : null, e67: T ? c[1] : null, conv: [r3(q[0]), r3(q[1])], datum: T ? 'TWD67' : 'TWD97' };
+          return true;
+        });
+      } else {
+        var best = null;
+        (ctx.ctlByName[m.name.toUpperCase()] || []).forEach(function (c) {
+          if (!c.ll) return;
+          var d = hypot(c.y - m.y, c.x - m.x);
+          if (!best || d < best.d) best = { c: c, d: d };
+        });
+        if (best) {
+          var c = best.c, raw = c.datum === 'TWD67' && c.raw && c.raw.length ? c.raw[0] : null;
+          hit = { kind: '圖根點', section: (c.sections || [])[0] || '', n67: raw ? raw[0] : null, e67: raw ? raw[1] : null, conv: [c.y, c.x], datum: c.datum, ctl_id: c.id };
+        }
+      }
+      if (!hit) { unmatched.push(m.name); return; }
+      hit.name = m.name; hit.meas = [m.y, m.x];
+      hit.dn = Math.round((m.y - hit.conv[0]) * 10000) / 10000; hit.de = Math.round((m.x - hit.conv[1]) * 10000) / 10000;
+      hit.d = hypot(hit.dn, hit.de);
+      checks.push(hit);
+    });
+    return { checks: checks, unmatched: unmatched };
+  }
+  /**
+   * 把檢核點分類（看附近 R 公尺內其他檢核點的差值）：
+   *   ok     差在容許差內
+   *   area   附近好幾點差的方向、大小都差不多 → 這一區轉換有偏差（可以加進內插修正）
+   *   single 只有這一點跟旁邊不一樣 → 點本身的問題（房屋、圍牆細部、舊測量誤差），不改參數
+   *   lone   差超過容許差，但附近檢核點不夠，還看不出是哪一種
+   *   wrong  差超過 1 公尺，多半是點名對錯或不是同一點
+   */
+  function classifyChecks(checks, opts) {
+    opts = opts || {};
+    var tol = opts.tol || 0.03, R = opts.range || 150;
+    checks.forEach(function (c) {
+      if (c.d > 1) { c.cls = 'wrong'; return; }
+      var nb = checks.filter(function (o) { return o !== c && o.d <= 1 && o.name !== c.name && hypot(o.meas[0] - c.meas[0], o.meas[1] - c.meas[1]) <= R; });
+      c.neighbors = nb.length;
+      if (nb.length >= 2) {
+        var mn = nb.reduce(function (a, o) { return a + o.dn; }, 0) / nb.length, me = nb.reduce(function (a, o) { return a + o.de; }, 0) / nb.length;
+        var off = hypot(c.dn - mn, c.de - me), mag = hypot(mn, me);
+        c.area = [Math.round(mn * 10000) / 10000, Math.round(me * 10000) / 10000];
+        if (c.d <= tol && mag <= tol) c.cls = 'ok';
+        else if (mag > tol && off <= Math.max(tol, 0.5 * mag)) c.cls = 'area';
+        else if (off > tol) c.cls = 'single';
+        else c.cls = 'ok';
+      } else c.cls = c.d <= tol ? 'ok' : 'lone';
+    });
+    return checks;
+  }
+
   /** 補點：每人每個點名只留最新一筆；參考點：每人、每段、每個點名 */
   function latestPoints(batches, tol) {
     var best = {};
@@ -1367,6 +1476,7 @@
     cleanControls: cleanControls, groupBaseFiles: groupBaseFiles, buildBase: buildBase, exportCtl: exportCtl, sectionNamesFromXlsx: sectionNamesFromXlsx,
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
+    matchChecks: matchChecks, classifyChecks: classifyChecks, addSupplement: addSupplement,
     parseParamInp: parseParamInp, parseCtlFix: parseCtlFix, sectionNums: sectionNums, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED

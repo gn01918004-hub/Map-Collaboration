@@ -134,7 +134,14 @@
   function loadCfg() {
     return readJson('設定.json').catch(function () { return {}; }).then(function (c) {
       S.cfg = Object.assign({ tolerance_cm: 2.0, section_names: {}, twd67_sections: null, abolished_sections: Core.ABOLISHED.slice(),
-        surveyors: [], case_types: ['保存登記', '鑑界', '分割'], dup_tol_cm: 2.0, ref_buffer_m: 50 }, c);
+        surveyors: [], case_types: ['保存登記', '鑑界', '分割'], dup_tol_cm: 2.0, ref_buffer_m: 50,
+        param_exclude: {}, param_choice: {}, param_exclude_names: [], check_tol_cm: 3.0, check_range_m: 150 }, c);
+      // 115.11.06 決定：HL129 不用、0360 用自己的 1140730（只套一次，之後管理頁可以改）
+      if (!S.cfg.defaults_v2) {
+        S.cfg.defaults_v2 = true;
+        if (S.cfg.param_exclude_names.indexOf('HL129') < 0) S.cfg.param_exclude_names.push('HL129');
+        if (!S.cfg.param_choice.KC0360) S.cfg.param_choice.KC0360 = 'KC0360.inp';
+      }
       S.names = Object.assign({}, DEFAULT_NAMES, S.cfg.section_names || {});
       return S.cfg;
     });
@@ -164,7 +171,7 @@
       if (!Object.keys(found).length) throw new Error('找不到 COA / BNP / PAR / CTL 檔（要選「數值」資料夾或它的 zip）');
       return loadCfg().then(function () {
         return loadGps().then(function (g) {
-          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gpsSets: g.sets, ctlFix: g.fixes,
+          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gpsSets: g.sets, ctlFix: g.fixes, supp: g.supp,
             paramChoice: S.cfg.param_choice || {}, progress: progress });
         });
       });
@@ -208,16 +215,17 @@
    * 設定.json 的 param_exclude {檔名: [不用的點]}、param_choice {段: 檔名}
    */
   function loadGps() {
-    return dirOf('底圖/轉換參數').then(function (d) { return walk(d, '', function (p) { return /\.(inp|txt)$/i.test(p); }); }, function () { return []; })
+    return dirOf('底圖/轉換參數').then(function (d) { return walk(d, '', function (p) { return /\.(inp|txt)$|檢核點\.json$/i.test(p); }); }, function () { return []; })
       .then(function (files) {
-        var sets = [], fixes = [], ex = (S.cfg && S.cfg.param_exclude) || {};
+        var sets = [], fixes = [], supp = [], ex = (S.cfg && S.cfg.param_exclude) || {}, exAll = (S.cfg && S.cfg.param_exclude_names) || [];
         files.forEach(function (f) {
           if (/\.txt$/i.test(f.path)) { fixes = fixes.concat(Core.parseCtlFix(Core.decode(f.bytes))); return; }
+          if (/檢核點\.json$/.test(f.path)) { try { supp = JSON.parse(Core.decode(f.bytes)); } catch (e) { supp = []; } return; }
           var pts = Core.parseParamInp(Core.decode(f.bytes)), secs = Core.sectionsFromPath(f.path), drop = ex[f.path] || [];
-          pts.forEach(function (p) { if (drop.indexOf(p.name) >= 0) p.wt = 0; });
+          pts.forEach(function (p) { if (drop.indexOf(p.name) >= 0 || exAll.indexOf(p.name) >= 0) p.wt = 0; });
           if (secs.length && pts.length) sets.push({ file: f.path, sections: secs, pts: pts });
         });
-        return { sets: sets, fixes: fixes };
+        return { sets: sets, fixes: fixes, supp: supp };
       });
   }
   /** 上傳轉換參數（zip、資料夾或 .inp）：每一組段挑正式計算成果存起來，原有圖根改算也存，再重新整理底圖 */
@@ -280,20 +288,64 @@
           links.push(Object.assign({}, l, { surveyor: b.surveyor, created: b.created, batch_id: b.id, sll: Core.ll(l.sy, l.sx), tll: Core.ll(l.ty, l.tx), bll: l.by ? Core.ll(l.by, l.bx) : null }));
         });
       });
+      return loadApproved().then(function (appr) {
+      var chks = Core.classifyChecks(allChecks(bs), { tol: chkTol(), range: S.cfg.check_range_m || 150 });
+      var ak = {}; appr.forEach(function (a) { ak[a.key] = 1; });
+      chks.forEach(function (c) { c.ll = Core.ll(c.meas[0], c.meas[1]); c.approved = !!ak[c.key]; });
       return { points: pts, used: Object.keys(used).map(function (k) { return used[k]; }), links: links, history: Core.parcelHistory(bs),
+        checks: chks, approved: appr, check_tol_cm: S.cfg.check_tol_cm || 3,
         surveyors: S.cfg.surveyors, case_types: S.cfg.case_types,
         batches: bs.map(function (b) {
           return { id: b.id, surveyor: b.surveyor, note: b.note, created: b.created, sections: (b.sections || []).join(','), stats: b.stats,
             caseType: b.caseType || (b.import ? '匯入既有清冊' : ''), caseNo: b.caseNo || '',
             parcels: (b.parcels || []).filter(function (p) { return p.found; }).map(function (p) { return p.parcel; }) };
         }) };
+      });
     });
+  }
+  function loadApproved() { return readJson('底圖/轉換參數/檢核點.json').catch(function () { return []; }); }
+  /** 管理者確認：把檢核點加進內插（或拿掉），再重新整理底圖 */
+  function setApproved(body) {
+    return loadApproved().then(function (list) {
+      if (body.add) {
+        var have = {}; list.forEach(function (a) { have[a.key] = 1; });
+        body.add.forEach(function (c) {
+          if (have[c.key] || c.n67 == null) return;
+          list.push({ key: c.key, name: c.name, section: c.section, kind: c.kind, n67: c.n67, e67: c.e67, n97: c.meas[0], e97: c.meas[1],
+            surveyor: c.surveyor, batch: c.batch_id, approved_at: Date.now(), by: body.by || '' });
+        });
+      }
+      if (body.remove) list = list.filter(function (a) { return body.remove.indexOf(a.key) < 0; });
+      return writeJson('底圖/轉換參數/檢核點.json', list);
+    }).then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true }; });
   }
   function stamp(d) { var p = function (n) { return (n < 10 ? '0' : '') + n; }; return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); }
   function surveyorOf(name) { return (S.cfg.surveyors || []).filter(function (x) { return x.name === name; })[0]; }
   function registryOf(name) {
     var sv = surveyorOf(name);
     return loadBatches(true).then(function (bs) { return Core.buildRegistry(bs, name, sv ? sv.code : ''); });
+  }
+  var CLS = { ok: '在容許差內', area: '附近好幾點都差不多 → 這一區轉換有偏差', single: '只有這點跟旁邊不同 → 點本身的細部差', lone: '附近檢核點不夠，還看不出是哪一種', wrong: '差超過 1 公尺，可能點名對錯' };
+  function chkTol() { return (S.cfg.check_tol_cm || 3) / 100; }
+  /** 全部上傳裡的檢核點；有 67 坐標的用「現在的參數」重算換算值（確認過的修正會讓差變小） */
+  function allChecks(bs) {
+    var out = [];
+    bs.forEach(function (b) {
+      (b.checks || []).forEach(function (c) {
+        var o = Object.assign({}, c, { surveyor: b.surveyor, created: b.created, batch_id: b.id, key: b.id + '|' + c.name });
+        o.d0 = c.d;
+        var conv = null;
+        if (c.kind === '圖根點') {   // 圖根點：用現在底圖裡重新換算過的坐標
+          var cur = (S.ctlByName[c.name.toUpperCase()] || []).filter(function (x) { return x.id === c.ctl_id; })[0];
+          if (cur) conv = [cur.y, cur.x];
+        } else if (c.n67 != null && S.trans[c.section]) {
+          var q = S.trans[c.section].apply(c.n67, c.e67); conv = [Math.round(q[0] * 1000) / 1000, Math.round(q[1] * 1000) / 1000];
+        }
+        if (conv) { o.conv = conv; o.dn = c.meas[0] - conv[0]; o.de = c.meas[1] - conv[1]; o.d = Math.hypot(o.dn, o.de); }
+        out.push(o);
+      });
+    });
+    return out;
   }
   function analyze(body) {
     var sv = surveyorOf(body.surveyor);
@@ -311,6 +363,22 @@
         res.blocking = res.report.filter(function (r) { return r[0] === 'error'; }).length + (pl.parcels.length ? 0 : 1);
         if (!body.caseType) { res.report.unshift(['error', '請選案件種類']); res.blocking++; }
         res.code = sv.code;
+        // 實測檢核點（選填）
+        if (body.checkFiles && body.checkFiles.length) {
+          var meas = [];
+          body.checkFiles.forEach(function (f) { meas = meas.concat(Core.parseCsvPoints(Core.decode(f.bytes))); });
+          var mc = Core.matchChecks(meas, { bnd: res.bnd, sections: res.sections, trans: S.trans, ctlByName: S.ctlByName });
+          var prev = allChecks(live);
+          Core.classifyChecks(prev.concat(mc.checks), { tol: chkTol(), range: S.cfg.check_range_m || 150 });
+          res.checks = mc.checks;
+          var cnt = {}; mc.checks.forEach(function (c) { cnt[c.cls] = (cnt[c.cls] || 0) + 1; });
+          res.report.push(['ok', '實測檢核點 ' + meas.length + ' 點，對到已知點 ' + mc.checks.length + ' 點' + (mc.unmatched.length ? '（對不到：' + mc.unmatched.slice(0, 8).join('、') + (mc.unmatched.length > 8 ? '…' : '') + '）' : '')]);
+          mc.checks.filter(function (c) { return c.cls !== 'ok'; }).forEach(function (c) {
+            res.report.push([c.cls === 'wrong' ? 'warn' : 'info', '檢核點 ' + c.name + '（' + c.kind + '）實測跟換算差 ' + Core.fmtDist(c.d) + '：' + CLS[c.cls]]);
+          });
+          res.stats['檢核點'] = mc.checks.length;
+        }
+        delete res.bnd;
         return res;
       });
     });
@@ -320,11 +388,11 @@
       if (res.blocking) throw new Error('還有紅色的問題要先處理（地號、案件種類…）');
       var created = Date.now() / 1000, safe = body.surveyor.replace(/[\\/:*?"<>|]/g, '_');
       var id = stamp(new Date()) + '_' + safe, dir = '上傳/' + id + '/';
-      var keep = body.files.filter(function (f) { return Core.wanted(f.path); });
+      var keep = body.files.filter(function (f) { return Core.wanted(f.path); }).concat((body.checkFiles || []).map(function (f) { return { path: '檢核點/' + f.path, bytes: f.bytes }; }));
       var rec = { version: 2, surveyor: body.surveyor, code: res.code, caseType: body.caseType, caseNo: body.caseNo || '', note: body.note || '',
         created: created, sections: res.sections, stats: res.stats, report: res.report, maxNum: res.maxNum || 0,
         parcels: res.parcels.map(function (p) { return { section: p.section, parcel: p.parcel, found: p.found, ring: p.ring || null }; }),
-        points: res.points, used: res.used, links: res.links, files: keep.map(function (f) { return f.path; }) };
+        points: res.points, used: res.used, links: res.links, checks: res.checks || [], files: keep.map(function (f) { return f.path; }).concat((body.checkFiles || []).map(function (f) { return '檢核點/' + f.path; })) };
       var p = Promise.resolve();
       keep.forEach(function (f) {
         var parts = f.path.split('/').filter(function (x) { return x && x !== '.' && x !== '..'; });
@@ -408,7 +476,8 @@
         return { datum: idx.datum, tolerance_cm: S.cfg.tolerance_cm, surveyors: S.cfg.surveyors, case_types: S.cfg.case_types,
           dup_tol_cm: S.cfg.dup_tol_cm, ref_buffer_m: S.cfg.ref_buffer_m, section_names: S.names, custom_names: S.cfg.section_names,
           abolished: S.cfg.abolished_sections, sections: idx.sections, ctl: idx.ctl, built: idx.built,
-          ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {} };
+          ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {},
+          param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3 };
       });
     }
     if (path === '/api/controls') return Promise.resolve(S.controls);
@@ -454,6 +523,8 @@
         if (Array.isArray(body.case_types)) S.cfg.case_types = body.case_types;
         if ('dup_tol_cm' in body) S.cfg.dup_tol_cm = body.dup_tol_cm;
         if ('ref_buffer_m' in body) S.cfg.ref_buffer_m = body.ref_buffer_m;
+        if ('check_tol_cm' in body) S.cfg.check_tol_cm = body.check_tol_cm;
+        if (Array.isArray(body.param_exclude_names)) { S.cfg.param_exclude_names = body.param_exclude_names; rebuild = true; }
         if (body.param_choice) { S.cfg.param_choice = Object.assign(S.cfg.param_choice || {}, body.param_choice); Object.keys(S.cfg.param_choice).forEach(function (k) { if (!S.cfg.param_choice[k]) delete S.cfg.param_choice[k]; }); rebuild = true; }
         if (body.param_exclude) { S.cfg.param_exclude = Object.assign(S.cfg.param_exclude || {}, body.param_exclude); rebuild = true; }
         if (body.section_names) {
@@ -477,6 +548,7 @@
       return saveSource(body.items).then(function () { return rebuildFrom(body.items, body.progress); }).then(function (idx) { return { ok: true, sections: idx.sections.length }; });
     }
     if (path === '/api/base/rebuild') return rebuildFromSaved(body && body.progress).then(function () { return { ok: true }; });
+    if (path === '/api/checks/approve') return loadCfg().then(function () { return setApproved(body); });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
     if (path === '/api/params/delete') {
       return dirOf('底圖/轉換參數').then(function (d) { return d.removeEntry(body.file || body.section + '.inp'); })

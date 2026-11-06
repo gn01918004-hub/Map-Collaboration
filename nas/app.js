@@ -1,7 +1,7 @@
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.06-3';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.06-4';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -41,6 +41,7 @@
     secBox: L.layerGroup().addTo(map),
     parcel: L.layerGroup().addTo(map),
     cases: L.layerGroup().addTo(map),
+    checks: L.layerGroup().addTo(map),
     plabel: L.layerGroup().addTo(map),
     ctl: L.layerGroup().addTo(map),
     clabel: L.layerGroup().addTo(map),
@@ -50,7 +51,7 @@
     field: L.layerGroup().addTo(map),
     hl: L.layerGroup().addTo(map)
   };
-  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true };
+  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true };
 
   var S = { info: null, controls: [], field: null, sections: {}, secCache: {}, secLoading: {}, onlyWho: '' };
 
@@ -251,10 +252,39 @@
       (cls === 'warn' ? '>!' : '>') + '</div><div class="lbl">' + esc(name) + (who ? ' <small>' + esc(who) + '</small>' : '') + '</div></div>' });
   }
   function visibleWho(w) { return !S.onlyWho || S.onlyWho === w; }
+  // ── 檢核點：箭頭（實測 − 換算，放大 500 倍） ──
+  var CHK_COLOR = { ok: '#13834a', area: '#7a3fd1', single: '#e8730c', lone: '#667085', wrong: '#d92d20' };
+  var CHK_TEXT = { ok: '在容許差內', area: '區域偏差（附近好幾點偏同一方向）', single: '單點差（點本身的細部差）', lone: '附近檢核點不夠，還看不出來', wrong: '差超過 1 公尺，可能點名對錯' };
+  function chkPopup(c) {
+    return '<div class="pop"><h4>檢核點 ' + esc(c.name) + '（' + esc(c.kind) + '）</h4><table>' +
+      '<tr><td>實測（97）</td><td>' + f3(c.meas[0]) + ', ' + f3(c.meas[1]) + '</td></tr>' +
+      '<tr><td>換算（97）</td><td>' + f3(c.conv[0]) + ', ' + f3(c.conv[1]) + '</td></tr>' +
+      (c.n67 != null ? '<tr><td>已知（67）</td><td>' + f3(c.n67) + ', ' + f3(c.e67) + '</td></tr>' : '') +
+      '<tr><td>差</td><td><b>' + dist(c.d) + '</b>（北 ' + (c.dn * 100).toFixed(1) + '、東 ' + (c.de * 100).toFixed(1) + ' 公分）' +
+      (Math.abs(c.d - c.d0) > 0.002 ? '<br><span class="small">上傳時差 ' + dist(c.d0) + '，加進內插後變小</span>' : '') + '</td></tr>' +
+      '<tr><td>判斷</td><td class="chk-' + c.cls + '">' + CHK_TEXT[c.cls] + (c.area ? '<br><span class="small">附近 ' + c.neighbors + ' 點平均差 ' + dist(Math.hypot(c.area[0], c.area[1])) + '</span>' : '') + '</td></tr>' +
+      '<tr><td>測量員</td><td>' + esc(c.surveyor) + '（' + when(c.created).slice(0, 9) + '）</td></tr></table>' +
+      (c.approved ? '<div class="small">✔ 已加進內插</div>' : '') + '</div>';
+  }
+  function refreshChecks() {
+    layers.checks.clearLayers();
+    if (!show.checks || !S.field || !S.field.checks) return;
+    var z = map.getZoom();
+    if (z < 14) return;
+    S.field.checks.forEach(function (c) {
+      if (!c.ll || !visibleWho(c.surveyor) || c.cls === 'wrong') return;
+      var col = CHK_COLOR[c.cls], F = 500;
+      var end = Core.ll(c.meas[0] + c.dn * F, c.meas[1] + c.de * F);
+      L.circleMarker(c.ll, { renderer: renderer, radius: 4, color: '#fff', weight: 1, fillColor: col, fillOpacity: 1 }).bindPopup(function () { return chkPopup(c); }).addTo(layers.checks);
+      if (end) L.polyline([c.ll, end], { renderer: renderer, color: col, weight: c.approved ? 4 : 3, opacity: 0.9 }).bindPopup(function () { return chkPopup(c); }).addTo(layers.checks);
+      if (z >= 17) L.marker(c.ll, { interactive: false, icon: L.divIcon({ className: '', html: '<div class="clbl" style="color:' + col + '">' + esc(c.name) + ' ' + (c.d * 100).toFixed(1) + 'cm</div>', iconSize: [0, 0] }) }).addTo(layers.checks);
+    });
+  }
   function refreshField() {
     ['field', 'ref', 'links', 'bad'].forEach(function (k) { layers[k].clearLayers(); });
     if (!S.field) return;
     refreshCases();
+    refreshChecks();
     var z = map.getZoom(), lab = z >= 15;
     S.field.points.forEach(function (p) {
       if (!p.ll || !visibleWho(p.surveyor)) return;
@@ -389,6 +419,7 @@
   function batchCounts(st) {
     var parts = [];
     if (st['宗地']) parts.push('宗地 <b>' + st['宗地'] + '</b>');
+    if (st['檢核點']) parts.push('檢核點 ' + st['檢核點']);
     if (st['補點']) parts.push('補點 <b>' + st['補點'] + '</b>' + (st['新補點'] != null ? '（新增 ' + st['新補點'] + '）' : ''));
     if (st['參考點']) parts.push('參考點 <b>' + st['參考點'] + '</b>');
     if (st['圖根點']) parts.push('圖根點 ' + st['圖根點']);
@@ -507,6 +538,13 @@
       '：' + esc(pending.slice(0, 8).map(function (x) { return x.path.split('/').pop(); }).join('、')) + (pending.length > 8 ? '…' : '') : (skip ? '這些檔案都用不到（要 D20、D14、L02、B90、CSV 或 zip）' : '');
     if (pending.length) preview();
   }
+  var chkPending = [];
+  $('pickChk').onclick = function () { $('chkInput').click(); };
+  $('chkInput').onchange = function () {
+    chkPending = chkPending.concat(Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; })); this.value = '';
+    $('chkPicked').textContent = chkPending.map(function (x) { return x.path; }).join('、');
+    schedulePreview();
+  };
   function need(cond, msg, el) { if (!cond) { toast(msg); if (el) el.focus(); throw new Error('no name'); } }
   function payload() {
     try {
@@ -514,9 +552,9 @@
       need($('caseType').value, '請在第 2 步選案件種類', $('caseType'));
       need($('parcelsText').value.trim(), '請在第 2 步填這次測量的地號', $('parcelsText'));
     } catch (e) { return Promise.reject(e); }
-    return Local.fileListToItems(pending).then(function (files) {
+    return Promise.all([Local.fileListToItems(pending), Local.fileListToItems(chkPending)]).then(function (a) {
       return { surveyor: $('who').value, caseType: $('caseType').value, caseNo: $('caseNo').value.trim(), parcelsText: $('parcelsText').value,
-        note: $('note').value.trim(), files: files };
+        note: $('note').value.trim(), files: a[0], checkFiles: a[1] };
     });
   }
   function renderPreview(r) {
@@ -561,7 +599,7 @@
       return loadField().then(function () { showBatch(r.batch); });
     }).catch(function (e) { busy(false); toast(e.message); });
   };
-  function resetUpload() { pending = []; $('picked').innerHTML = ''; $('note').value = ''; $('caseNo').value = ''; $('parcelsText').value = ''; $('u3').classList.add('hidden'); $('preview').innerHTML = ''; }
+  function resetUpload() { pending = []; $('picked').innerHTML = ''; $('note').value = ''; $('caseNo').value = ''; $('parcelsText').value = ''; chkPending = []; $('chkPicked').textContent = ''; $('u3').classList.add('hidden'); $('preview').innerHTML = ''; }
   $('cancelUpload').onclick = resetUpload;
 
   // ── 管理 ──
@@ -592,6 +630,9 @@
     $('refBuf').value = i.ref_buffer_m || 50;
     renderSurveyors();
     renderParams();
+    renderChecks();
+    $('exNames').value = (i.param_exclude_names || []).join('\n');
+    $('chkTol').value = i.check_tol_cm || 3;
     $('secNames').value = Object.keys(i.section_names || {}).map(function (k) { return k + '=' + i.section_names[k]; }).join('\n');
     var c = i.ctl;
     $('ctlSummary').innerHTML = '<div class="small">所有 .CTL 共 ' + (c.lines || 0).toLocaleString() + ' 行（各段重複很多），整理後是 <b>' + (c.points || 0).toLocaleString() + '</b> 個點。</div>' +
@@ -676,6 +717,54 @@
       };
     });
   }
+  function renderChecks() {
+    var all = (S.field && S.field.checks) || [];
+    if (!all.length) { $('chkList').innerHTML = '<div class="small">還沒有檢核點。測量員上傳時在第 3 步加「實測檢核點」就會出現。</div>'; return; }
+    var cnt = {}; all.forEach(function (c) { cnt[c.cls] = (cnt[c.cls] || 0) + 1; });
+    var h = '<div class="small">共 ' + all.length + ' 點：' + Object.keys(CHK_TEXT).filter(function (k) { return cnt[k]; }).map(function (k) { return '<span class="chk-' + k + '">' + CHK_TEXT[k].split('（')[0] + ' ' + cnt[k] + '</span>'; }).join('、') + '</div>';
+    var cand = all.filter(function (c) { return (c.cls === 'area' || c.cls === 'lone') && !c.approved && c.n67 != null; });
+    var appr = all.filter(function (c) { return c.approved; });
+    if (cand.length) {
+      h += '<label>可以加進內插的（建議勾紫色的）</label><div class="reg"><table><tr><th></th><th>點</th><th>段</th><th>差</th><th>判斷</th><th>測量員</th></tr>' + cand.map(function (c, i) {
+        return '<tr><td><input type="checkbox" data-ca="' + i + '"' + (c.cls === 'area' ? ' checked' : '') + '></td><td><a href="#" data-go="' + i + '">' + esc(c.name) + '</a></td><td>' + esc(c.section.slice(2)) + '</td><td>' + dist(c.d) +
+          '</td><td class="chk-' + c.cls + '">' + (c.cls === 'area' ? '區域偏差' : '看不出') + '</td><td>' + esc(c.surveyor) + '</td></tr>';
+      }).join('') + '</table></div><button id="chkApprove" class="go">加進內插（重新整理底圖）</button>';
+    }
+    if (appr.length) {
+      h += '<label>已加進內插的</label><div class="reg"><table><tr><th></th><th>點</th><th>段</th><th>現在的差</th><th>上傳時</th></tr>' + appr.map(function (c, i) {
+        return '<tr><td><input type="checkbox" data-ap="' + i + '"></td><td>' + esc(c.name) + '</td><td>' + esc(c.section.slice(2)) + '</td><td>' + dist(c.d) + '</td><td>' + dist(c.d0) + '</td></tr>';
+      }).join('') + '</table></div><button id="chkRemove" class="ghost">把勾選的拿掉</button>';
+    }
+    $('chkList').innerHTML = h;
+    Array.prototype.forEach.call($('chkList').querySelectorAll('[data-go]'), function (a) {
+      a.onclick = function (e) { e.preventDefault(); var c = cand[+a.getAttribute('data-go')]; flyTo(c.ll, 18, chkPopup(c)); };
+    });
+    var send = function (body, msg) {
+      body.by = store('who') || ''; body.progress = progressTo(msg);
+      busy(true, msg + '…');
+      api('/api/checks/approve', body).then(function () { busy(false); return restart(); }).then(function () { openPanel('admin'); }).catch(function (e) { busy(false); toast(e.message); });
+    };
+    if ($('chkApprove')) $('chkApprove').onclick = function () {
+      var pick = Array.prototype.filter.call($('chkList').querySelectorAll('[data-ca]'), function (x) { return x.checked; }).map(function (x) { return cand[+x.getAttribute('data-ca')]; });
+      if (!pick.length) return toast('沒有勾選');
+      if (!confirm('把這 ' + pick.length + ' 點加進那幾段的內插？（只修正附近 500 公尺，GPS 共同點不會動）')) return;
+      send({ add: pick }, '加進內插、重新整理底圖');
+    };
+    if ($('chkRemove')) $('chkRemove').onclick = function () {
+      var pick = Array.prototype.filter.call($('chkList').querySelectorAll('[data-ap]'), function (x) { return x.checked; }).map(function (x) { return appr[+x.getAttribute('data-ap')].key; });
+      if (!pick.length) return toast('沒有勾選');
+      send({ remove: pick }, '拿掉、重新整理底圖');
+    };
+  }
+  $('chkTolSave').onclick = function () {
+    api('/api/config', { check_tol_cm: parseFloat($('chkTol').value) || 3 }).then(function () { return loadInfo(); }).then(loadField).then(function () { renderChecks(); toast('已儲存'); });
+  };
+  $('exNamesSave').onclick = function () {
+    var names = $('exNames').value.split(/[\s,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (!confirm('所有參數檔都不用：' + (names.join('、') || '（沒有）') + '，重新計算？')) return;
+    busy(true, '重新計算…');
+    api('/api/config', { param_exclude_names: names, progress: progressTo('重新整理底圖') }).then(function () { busy(false); return restart(); }).then(function () { openPanel('admin'); }).catch(function (e) { busy(false); toast(e.message); });
+  };
   function paramUpload(list) {
     if (!list.length) return;
     busy(true, '讀取轉換參數…');

@@ -56,6 +56,11 @@
             <input type="file" id="fileInput" multiple hidden>
           </div>
           <div id="picked"></div>
+          <div class="chkbox">
+            <b>實測檢核點（選填）</b>：現場用 97 實測到「有 67 坐標的點」（圖根點、界址點號），CSV／TXT 一行一點：<code>點名,Y,X</code>
+            <br><button id="pickChk" class="ghost">選檢核點檔</button> <span id="chkPicked" class="small"></span>
+            <input type="file" id="chkInput" accept=".csv,.txt" multiple hidden>
+          </div>
           <input id="note" placeholder="備註（可不填）">
         </div>
       </div>
@@ -129,12 +134,22 @@
         <button id="baseRebuild" class="ghost">重新整理</button>
       </div>
       <div class="card">
+        <h3>外業檢核點（第二層修正）</h3>
+        <p class="small">測量員上傳的實測檢核點，跟換算坐標比：<b style="color:#7a3fd1">紫色</b>＝附近好幾點偏同一方向（這一區轉換有偏差），勾選後按「加進內插」修正那一區；
+        <b style="color:#e8730c">橘色</b>＝只有單點不同（點本身的細部差，不改參數）；綠色＝在容許差內。地圖上的箭頭放大 500 倍。</p>
+        <div class="row"><label style="margin:0">容許差（公分）</label><input id="chkTol" type="number" step="0.5" min="0.5" style="width:90px"><button id="chkTolSave" class="ghost">儲存</button></div>
+        <div id="chkList"></div>
+      </div>
+      <div class="card">
         <h3>各段轉換參數（67 → 97）</h3>
         <p class="small">有做過 GPS 共同點的段，把轉換參數資料夾或 zip（裡面有 <b>段號.inp</b>，例如 367.inp）放進來，那一段就改用它，比自動推算準很多。</p>
         <button id="parPickDir" class="pick">選資料夾</button>
         <button id="parPickFile" class="pick">選 zip / .inp</button>
         <input type="file" id="parDir" webkitdirectory multiple hidden>
         <input type="file" id="parFile" accept=".zip,.inp" multiple hidden>
+        <label>所有參數檔都不用的點（一行一個，例如 HL129）</label>
+        <textarea id="exNames" rows="2"></textarea>
+        <button id="exNamesSave" class="ghost">儲存並重新計算</button>
         <div id="parList"></div>
       </div>
       <div class="card">
@@ -203,6 +218,7 @@
       <label><input type="checkbox" data-layer="ctl" checked> <span class="sym dot"></span> 圖根點</label>
       <label><input type="checkbox" data-layer="bad" checked> <span class="sym warn">!</span> 坐標不符</label>
       <label><input type="checkbox" data-layer="links" checked> <span class="sym line"></span> 設站連線</label>
+      <label><input type="checkbox" data-layer="checks" checked> <span class="sym arrow">➚</span> 檢核點（實測差）</label>
       <label><input type="checkbox" data-layer="cases" checked> <span class="sym case"></span> 有案件的土地</label>
       <label><input type="checkbox" data-layer="parcel" checked> <span class="sym par"></span> 地籍線</label>
       <div class="lsep"></div>

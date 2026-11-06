@@ -140,6 +140,31 @@ function dbf(fields, rows) {
   const far = Core.parseParamInp([0, 1, 2, 3, 4, 5].map(k => line('P' + k, k)).concat(['FAR  1  2694530.852  215008.487  2694736.314  214179.532']).join('\n'));
   assert.deepStrictEqual(Core.checkParams(far).isolated.map(x => x.name), ['FAR']);
 
+  // 第二層：檢核點分類＋局部修正（GPS 共同點不動）
+  {
+    const T0 = Core.GpsTransform(pp, 'g');
+    const meas = [], bndT = {};
+    for (let k = 0; k < 6; k++) {   // 一區 6 點都往北偏 6 cm
+      const n67 = 2700000 + k * 30, e67 = 215500 + (k % 3) * 25, q = T0.apply(n67, e67);
+      bndT[String(100 + k)] = [n67, e67]; meas.push({ name: String(100 + k), y: q[0] + 0.06 + (k % 2) * 0.004, x: q[1] - 0.003 });
+    }
+    { const n67 = 2700500, e67 = 216300, q = T0.apply(n67, e67); bndT['200'] = [n67, e67]; meas.push({ name: '200', y: q[0], x: q[1] + 0.07 }); }   // 單點
+    for (let k = 0; k < 3; k++) { const n67 = 2700520 + k * 40, e67 = 216350, q = T0.apply(n67, e67); bndT[String(300 + k)] = [n67, e67]; meas.push({ name: String(300 + k), y: q[0] + 0.004, x: q[1] }); }
+    const m = Core.matchChecks(meas.concat([{ name: 'NOPE', y: 1, x: 1 }]), { bnd: { KC9999: bndT }, sections: ['KC9999'], trans: { KC9999: T0 }, ctlByName: {} });
+    assert.deepStrictEqual(m.unmatched, ['NOPE']);
+    Core.classifyChecks(m.checks, { tol: 0.03, range: 150 });
+    const cls = n => m.checks.find(c => c.name === n).cls;
+    assert.strictEqual(cls('102'), 'area'); assert.strictEqual(cls('200'), 'single'); assert.strictEqual(cls('300'), 'ok');
+    const T1 = Core.addSupplement(Core.Transform.from(T0.toJSON()), m.checks.filter(c => c.cls === 'area').map(c => ({ n67: c.n67, e67: c.e67, n97: c.meas[0], e97: c.meas[1] })), pp.map(p => [p.n67, p.e67]), { range: 500 });
+    const q = T1.apply(2700075, 215525), q0 = T0.apply(2700075, 215525);
+    assert.ok(q[0] - q0[0] > 0.03, '這一區要往北修正');
+    pp.forEach(p => { const a = T1.apply(p.n67, p.e67); assert.ok(Math.hypot(a[0] - p.n97, a[1] - p.e97) < 0.001, 'GPS 共同點不能動'); });
+    const far = T1.apply(2702000, 217500), far0 = T0.apply(2702000, 217500);
+    assert.ok(Math.hypot(far[0] - far0[0], far[1] - far0[1]) < 1e-9, '遠的地方不受影響');
+    const back = Core.Transform.from(JSON.parse(JSON.stringify(T1.toJSON()))).apply(2700075, 215525);
+    assert.ok(Math.abs(back[0] - q[0]) < 1e-9);
+  }
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

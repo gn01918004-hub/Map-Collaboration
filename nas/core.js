@@ -1780,7 +1780,17 @@
         }
         skipped.push(nm); return;
       }
-      if (/^Q/i.test(nm)) { newPts.push({ kind: '補點', name: nm, code: '', y97: m.y, x97: m.x, src: m.src }); return; }
+      if (/^Q/i.test(nm)) {
+        // D20 裡已經有的補點（換到這段坐標後 10 公分內）→ 是重測到的舊補點：不重寫，拿來做局部修正
+        var sysq = toSys(m.y, m.x), old = null;
+        (o.d20 ? o.d20.records : []).forEach(function (r) {
+          if (r.deleted) return;
+          var y = parseFloat(r.values.CTL_Y), x = parseFloat(r.values.CTL_X), d = hypot(y - sysq[0], x - sysq[1]);
+          if (isFinite(d) && d < 0.10 && (!old || d < old.d)) old = { name: r.values.CTL_NAME.trim(), y: y, x: x, d: d };
+        });
+        if (old) { checks.push({ name: nm + (old.name.toUpperCase() !== nm.toUpperCase() ? '（D20 的 ' + old.name + '）' : ''), kind: '補點', meas: [m.y, m.x], known: [old.y, old.x], src: m.src }); return; }
+        newPts.push({ kind: '補點', name: nm, code: '', y97: m.y, x97: m.x, src: m.src }); return;
+      }
       newPts.push({ kind: '參考點', name: nm, code: m.code == null ? '' : String(m.code).trim(), y97: m.y, x97: m.x, src: m.src });
     });
     if (skipped.length) report.push(['info', '不寫入、也不是已知點：' + skipped.slice(0, 10).join('、') + (skipped.length > 10 ? '…' : '')]);
@@ -1821,10 +1831,12 @@
     else report.push(['ok', '案件局部修正：用 ' + fit.n + ' 個重測舊點（' + (fit.type === 'helmert' ? '四參數' : '平移') + '），修正量 ' + fmtDist(hypot(fit.shift[0], fit.shift[1])) +
       (fit.type === 'helmert' ? '、尺度 ' + fit.scalePpm.toFixed(0) + ' ppm、旋轉 ' + fit.rotSec.toFixed(1) + '″' : '') + '，修正後殘差 RMS ' + fmtDist(fit.rms)]);
     checks.forEach(function (c) {
-      if (c.level !== 'ok') report.push([c.level === 'bad' ? 'error' : 'warn', c.kind + ' ' + c.name + '：實測換回 ' + lbl + ' 跟已知差 ' + fmtDist(c.before) + '，修正後 ' + fmtDist(c.after) +
-        (c.level === 'bad' ? '（超過容許差' + (c.used ? '' : '，沒拿來修正') + '）' : '（超過提醒門檻）')]);
+      // 舊點本身差太多是那一點的問題（牆角、樁位被動過…），提醒但不擋寫入新點
+      if (c.level !== 'ok') report.push(['warn', (c.level === 'bad' ? '❗ ' : '') + c.kind + ' ' + c.name + '：實測換回 ' + lbl + ' 跟已知差 ' + fmtDist(c.before) + '，修正後 ' + fmtDist(c.after) +
+        (c.level === 'bad' ? '（超過容許差' + (c.used ? '' : '，沒拿來修正') + '，請確認這點）' : '（超過提醒門檻）')]);
     });
     if (fit.n < 3 && checks.length) report.push(['warn', '重測舊點少於 3 點，只做平移，沒辦法檢查旋轉、尺度']);
+    if (fit.n >= 3 && fit.rms > tol) report.push(['error', '局部修正後殘差 RMS ' + fmtDist(fit.rms) + ' 超過容許差，這一區舊點彼此對不起來，請先確認再寫入']);
     newPts.forEach(function (p) { var q = fit.apply(p.y0, p.x0); p.y = r3(q[0]); p.x = r3(q[1]); });
     // 規劃寫入（規則同資料轉換系統）
     var plan = planDbfWrite({ d14: o.d14, d20: o.d20, points: newPts.map(function (p, i) { return { key: 'p' + i, name: p.name, code: p.code, y: p.y, x: p.x, src: fileName(p.src || '') }; }) });

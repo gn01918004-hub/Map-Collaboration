@@ -211,6 +211,11 @@ function dbf(fields, rows) {
     assert.strictEqual(ref.out, '501.11'); assert.strictEqual(sup.name, 'QW58');
     assert.ok(Math.hypot(ref.y - 2700310, ref.x - 215820) < 0.003, '新參考點回到正確的 67 位置');
     const files = Core.buildDbfFiles(r.plan, d14, d20, Date.UTC(2026, 10, 7));
+    // D20 已有的補點被重測：當舊點，不重寫
+    const q20 = Core.parseDbfRaw(files.d20), oldQ = q20.records[q20.records.length - 1].values;
+    const q97 = T0.apply(+oldQ.CTL_Y, +oldQ.CTL_X);
+    const r2 = Core.planWriteBack({ section: 'KC9999', T: T0, measured: [{ name: 'Q77', y: q97[0] + 0.01, x: q97[1], src: 'x' }], coa, ctlByName: {}, d14: Core.parseDbfRaw(files.d14), d20: q20, registry: { points: [], maxNum: 58 }, svCode: 'W' });
+    assert.strictEqual(r2.plan.toD20.length, 0); assert.strictEqual(r2.checks[0].kind, '補點');
     assert.strictEqual(Core.parseDbfRaw(files.d14).nrec, 2); assert.strictEqual(Core.parseDbfRaw(files.d20).nrec, 2);
   }
 

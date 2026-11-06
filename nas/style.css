@@ -174,3 +174,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
 
 #top .tools { background: #b54708; }
 .wbt td.bad { color: #d92d20; font-weight: bold; } .wbt td.warn { color: #b54708; font-weight: bold; } .wbt td.okc { color: #13834a; }
+.tag.圖解地號 { background: #8a5a00; }
+.sym.gpar { border: 2px dashed #8a5a00; background: rgba(138,90,0,.05); }
+.plbl.glbl { color: #8a5a00; font-style: italic; }

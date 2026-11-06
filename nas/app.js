@@ -1,7 +1,7 @@
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.07-3';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-4';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -39,6 +39,7 @@
 
   var layers = {
     secBox: L.layerGroup().addTo(map),
+    graphic: L.layerGroup().addTo(map),
     parcel: L.layerGroup().addTo(map),
     cases: L.layerGroup().addTo(map),
     checks: L.layerGroup().addTo(map),
@@ -51,7 +52,7 @@
     field: L.layerGroup().addTo(map),
     hl: L.layerGroup().addTo(map)
   };
-  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true };
+  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true, graphic: true };
 
   var S = { info: null, controls: [], field: null, sections: {}, secCache: {}, secLoading: {}, onlyWho: '' };
 
@@ -324,7 +325,54 @@
     else if (z < PARCEL_ZOOM && show.parcel) t = '再放大一點就會出現地籍線';
     $('zoomHint').textContent = t;
   }
-  function refreshAll() { drawSectionLabels(); refreshParcels(); refreshCtl(); refreshField(); hintZoom(); }
+  // ── 圖解區（參考圖層）──
+  var GRAPHIC_NOTE = '圖解區是紙圖數化的，位置誤差可能有幾公尺，只能當參考，不能拿來放樣或檢核。';
+  S.gCache = {};
+  function graphicPopup(code, p) {
+    return '<div class="pop"><h4>' + esc(secName(code)) + '　' + esc(p.k) + ' 地號 <span class="tag 圖解地號">圖解區</span></h4><table>' +
+      (p.a != null ? '<tr><td>面積（圖上量）</td><td>' + Number(p.a).toLocaleString() + ' ㎡</td></tr>' : '') + '</table>' +
+      '<div class="w">⚠ ' + GRAPHIC_NOTE + '</div>' + timelineHtml(code, p.k) + '</div>';
+  }
+  function graphicLayer(code) {
+    var c = S.gCache[code];
+    if (c.layer) return c.layer;
+    var g = L.layerGroup(), segs = [];
+    for (var i = 0; i < c.lines.length; i += 4) segs.push([[c.lines[i], c.lines[i + 1]], [c.lines[i + 2], c.lines[i + 3]]]);
+    L.polyline(segs, { renderer: renderer, color: '#8a5a00', weight: 1, dashArray: '5 4', opacity: 0.9, interactive: false }).addTo(g);
+    c.parcels.forEach(function (p) {
+      var ring = []; for (var j = 0; j < p.r.length; j += 2) ring.push([p.r[j], p.r[j + 1]]);
+      var poly = L.polygon(ring, { renderer: renderer, stroke: false, fillColor: '#8a5a00', fillOpacity: 0.03 });
+      poly.on('click', function (e) { L.popup().setLatLng(e.latlng).setContent(graphicPopup(code, p)).openOn(map); });
+      g.addLayer(poly);
+    });
+    c.layer = g;
+    return g;
+  }
+  function refreshGraphic() {
+    layers.graphic.clearLayers();
+    var z = map.getZoom();
+    if (!show.graphic || z < CTL_ZOOM) return;
+    var vb = map.getBounds();
+    ((S.info && S.info.graphic) || []).forEach(function (gi) {
+      if (!gi.bbox || !vb.intersects([[gi.bbox[0], gi.bbox[1]], [gi.bbox[2], gi.bbox[3]]])) return;
+      var c = S.gCache[gi.section];
+      if (!c) {
+        S.gCache[gi.section] = { loading: true };
+        api('/api/graphic/' + gi.section).then(function (d) { S.gCache[gi.section] = d; refreshGraphic(); }).catch(function () { delete S.gCache[gi.section]; });
+        return;
+      }
+      if (c.loading) return;
+      layers.graphic.addLayer(graphicLayer(gi.section));
+      if (z >= 18) {
+        var n = 0;
+        c.parcels.forEach(function (p) {
+          if (n > 600 || !vb.contains(p.c)) return; n++;
+          L.marker(p.c, { interactive: false, icon: L.divIcon({ className: '', html: '<span class="plbl glbl">' + esc(p.k) + '</span>', iconSize: [0, 0] }) }).addTo(layers.graphic);
+        });
+      }
+    });
+  }
+  function refreshAll() { drawSectionLabels(); refreshGraphic(); refreshParcels(); refreshCtl(); refreshField(); hintZoom(); }
   map.on('moveend', refreshAll);
 
   document.addEventListener('click', function (e) {
@@ -401,6 +449,15 @@
         L.popup().setLatLng(p.c).setContent(parcelPopup(r.section, p)).openOn(map);
       };
       setTimeout(function () { tryOpen(0); }, 900);
+    } else if (r.type === '圖解地號') {
+      var gring = []; for (var gi = 0; gi < r.ring.length; gi += 2) gring.push([r.ring[gi], r.ring[gi + 1]]);
+      flyTo(r.ll, 18);
+      setTimeout(function () {
+        layers.hl.clearLayers();
+        var ghl = L.polygon(gring, { color: '#f5b400', weight: 5, dashArray: '6 4', fillOpacity: 0.15, interactive: false }).addTo(layers.hl);
+        setTimeout(function () { layers.hl.removeLayer(ghl); }, 8000);
+        L.popup().setLatLng(r.ll).setContent(graphicPopup(r.section, { k: r.parcel, a: r.area })).openOn(map);
+      }, 900);
     } else if (r.type === '圖根點') {
       var p = S.controls.filter(function (x) { return x.id === r.id; })[0];
       flyTo(r.ll, 18, p ? ctlPopup(p) : null);
@@ -632,6 +689,7 @@
     renderSurveyors();
     renderParams();
     renderChecks();
+    renderGraphic();
     $('exNames').value = (i.param_exclude_names || []).join('\n');
     $('chkTol').value = i.check_tol_cm || 3;
     $('secNames').value = Object.keys(i.section_names || {}).map(function (k) { return k + '=' + i.section_names[k]; }).join('\n');
@@ -656,6 +714,34 @@
     });
   }
   $('issueType').onchange = drawIssues;
+  function renderGraphic() {
+    var gl = (S.info && S.info.graphic) || [];
+    $('grList').innerHTML = gl.length ? '<table class="dt"><tr><th>段</th><th>內容</th><th>坐標</th><th></th></tr>' + gl.map(function (g) {
+      return '<tr><td>' + esc(secName(g.section)) + '</td><td class="small">' + g.lines.toLocaleString() + ' 條線、' + g.parcels.toLocaleString() + ' 筆地號</td><td class="small">' +
+        esc(g.datum) + '<br>' + esc(g.how || '') + '</td><td><button class="ghost" data-gdel="' + esc(g.section) + '">刪除</button></td></tr>';
+    }).join('') + '</table>' : '<div class="small">還沒有圖解區</div>';
+    Array.prototype.forEach.call($('grList').querySelectorAll('[data-gdel]'), function (b) {
+      b.onclick = function () {
+        var sec = b.getAttribute('data-gdel');
+        if (!confirm('刪除圖解區 ' + secName(sec) + '？')) return;
+        api('/api/graphic/delete', { section: sec }).then(function () { delete S.gCache[sec]; return loadInfo(); }).then(function () { renderAdmin(); refreshAll(); });
+      };
+    });
+  }
+  function graphicUpload(list) {
+    if (!list.length) return;
+    busy(true, '讀取圖解區…');
+    Local.fileListToItems(list).then(function (items) { return api('/api/graphic/upload', { items: items, datum: $('grDatum').value }); })
+      .then(function (r) {
+        busy(false); S.gCache = {};
+        $('grMsg').innerHTML = r.report.map(function (x) { return '<div class="msg ' + (x[0] === 'ok' ? 'ok' : x[0]) + '">' + esc(x[1]) + '</div>'; }).join('');
+        return loadInfo().then(function () { renderGraphic(); refreshAll(); });
+      }).catch(function (e) { busy(false); toast('失敗：' + e.message, 10000); });
+  }
+  $('grPickDir').onclick = function () { $('grDir').click(); };
+  $('grPickFile').onclick = function () { $('grFile').click(); };
+  $('grDir').onchange = function () { graphicUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.webkitRelativePath || f.name, file: f }; })); this.value = ''; };
+  $('grFile').onchange = function () { graphicUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; })); this.value = ''; };
   /** 各段 67→97 用什麼方法、準不準；可以改用別份、不用某些點 */
   function renderParams() {
     var secs = ((S.info && S.info.sections) || []).filter(function (x) { return x.datum === 'TWD67'; });

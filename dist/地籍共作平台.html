@@ -843,6 +843,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
 
 #top .tools { background: #b54708; }
 .wbt td.bad { color: #d92d20; font-weight: bold; } .wbt td.warn { color: #b54708; font-weight: bold; } .wbt td.okc { color: #13834a; }
+.tag.圖解地號 { background: #8a5a00; }
+.sym.gpar { border: 2px dashed #8a5a00; background: rgba(138,90,0,.05); }
+.plbl.glbl { color: #8a5a00; font-style: italic; }
 
 </style>
 </head>
@@ -1018,6 +1021,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
         <div id="chkList"></div>
       </div>
       <div class="card">
+        <h3>圖解區（參考圖層）</h3>
+        <p class="small">把圖解區的 <b>KCxxxx.D2B、D2C、D2D</b>（資料夾或 zip）放進來，地圖上會用<b style="color:#8a5a00">咖啡色虛線</b>畫出來、也可以搜尋地號。
+          圖解區是紙圖數化的，位置誤差可能有幾公尺，<b>只當參考</b>，不參與換算和檢核。有地號的版本（D2B 有段號地號）才能點選、搜尋。</p>
+        <div class="row"><label style="margin:0">坐標系統</label><select id="grDatum"><option value="auto">自動判斷（跟旁邊數值區比）</option><option value="TWD67">TWD67</option><option value="TWD97">TWD97</option></select></div>
+        <button id="grPickDir" class="pick">選資料夾</button>
+        <button id="grPickFile" class="pick">選 zip / 檔案</button>
+        <input type="file" id="grDir" webkitdirectory multiple hidden>
+        <input type="file" id="grFile" accept=".zip,.d2b,.d2c,.d2d,.D2B,.D2C,.D2D" multiple hidden>
+        <div id="grMsg"></div>
+        <div id="grList"></div>
+      </div>
+      <div class="card">
         <h3>各段轉換參數（67 → 97）</h3>
         <p class="small">有做過 GPS 共同點的段，把轉換參數資料夾或 zip（裡面有 <b>段號.inp</b>，例如 367.inp）放進來，那一段就改用它，比自動推算準很多。</p>
         <button id="parPickDir" class="pick">選資料夾</button>
@@ -1100,6 +1115,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
       <label><input type="checkbox" data-layer="checks" checked> <span class="sym arrow">➚</span> 檢核點（實測差）</label>
       <label><input type="checkbox" data-layer="cases" checked> <span class="sym case"></span> 有案件的土地</label>
       <label><input type="checkbox" data-layer="parcel" checked> <span class="sym par"></span> 地籍線</label>
+      <label><input type="checkbox" data-layer="graphic" checked> <span class="sym gpar"></span> 圖解區（參考）</label>
       <div class="lsep"></div>
       <select id="baseLayer">
         <option value="emap">底圖：電子地圖</option>
@@ -2376,7 +2392,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       (byExt.CSV || []).concat((byExt.TXT || []).filter(function (f) { return !looksLikeB90(decode(f.bytes)); })).forEach(function (f) {
         var g = parseGnssCsv(decode(f.bytes));
         g.known.forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'CSV 儀器檔'); });
-        var named = g.measured.filter(function (p) { return !isBoundaryName(p.name); });
+        var named = g.measured.map(function (p) { var a = isBoundaryName(p.name) && codeAlias(p); return a ? Object.assign({}, p, { name: a, orig: p.name }) : p; })
+          .filter(function (p) { return !isBoundaryName(p.name); });
         if (g.measured.length) report.push(['info', sec + '：' + fileName(f.path) + ' 有實測點 ' + g.measured.length + ' 點' + (named.length ? '（有點名的 ' + named.length + ' 點會拿來當檢核點）' : '（都是細部點號）')]);
         sd.instr.push({ file: f.path, type: 'GNSS', known: g.known, measured: named });
       });
@@ -2388,7 +2405,10 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           report.push([Math.min(Math.abs(d0), Math.abs(d1)) > 20 ? 'warn' : 'info', sec + '：後視檢核 ' + b.station + '→' + b.back + '（' + b.coord.toFixed(1) + ' m）坐標反算跟觀測差：不改正 ' + d0.toFixed(1) + ' mm、改算到平面 ' + d1.toFixed(1) + ' mm']);
         });
         var named = r.shots.filter(function (p) { return !isBoundaryName(p.name); });
-        sd.instr.push({ file: f.path, type: 'RAW', known: r.known, measured: named, backsights: r.backsights });
+        // 67 坐標的段：實際資料（後視統計）顯示坐標比較接近地面距離 → 另外算一份不做尺度改正的
+        var rg = parseNikonRaw(decode(f.bytes), Object.assign({}, opts.raw || {}, { grid: false }));
+        var namedG = rg.shots.filter(function (p) { return !isBoundaryName(p.name); });
+        sd.instr.push({ file: f.path, type: 'RAW', known: r.known, measured: named, measuredGround: namedG, backsights: r.backsights });
       });
       sd.finish = function () {
         usedOrder = usedOrder.filter(function (k) { return !secPts['補點|' + k]; });
@@ -2562,6 +2582,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
    * 衛星接收儀 CSV：點名,N,E,高程,編碼
    *   高程 0、沒有編碼 → 上傳到接收儀的已知點；有高程或編碼 → 實測點（數字點名是細部點）
    */
+  /** 點名是流水號、代碼欄寫點名（例如 6,…,hl86）→ 回傳代碼當點名（大寫），不然 '' */
+  function codeAlias(p) { var c = String((p && p.code) || '').trim(); return /^[A-Za-z]{1,3}\d+[A-Za-z]?$/.test(c) ? c.toUpperCase() : ''; }
   function parseGnssCsv(text) {
     var known = [], measured = [];
     lines(text).forEach(function (l, i) {
@@ -2903,9 +2925,46 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
   function planWriteBack(o) {
     var report = [], tol = o.tol || 0.06, warn = o.warn || 0.05, R = o.radius || 200, is67 = !!o.T;
     var toSys = function (y, x) { return is67 ? o.T.inverse(y, x) : [y, x]; };
-    var newPts = [], checks = [], skipped = [];
+    var newPts = [], checks = [], skipped = [], autoHit = [], badCode = [];
+    var d20recs = (o.d20 ? o.d20.records : []).filter(function (r) { return !r.deleted; }).map(function (r) {
+      return { name: String(r.values.CTL_NAME || '').trim(), y: parseFloat(r.values.CTL_Y), x: parseFloat(r.values.CTL_X) };
+    }).filter(function (r) { return r.name && isFinite(r.y) && isFinite(r.x); });
+    var ctlNear = function (key, y, x, lim) {
+      var best = null;
+      (o.ctlByName[key] || []).forEach(function (c) { var d = hypot(c.y - y, c.x - x); if (d < lim && (!best || d < best.d)) best = { c: c, d: d }; });
+      if (!best) return null;
+      var kn = is67 ? (best.c.datum === 'TWD67' && best.c.raw && best.c.raw[0]) : [best.c.y, best.c.x];
+      return kn ? { name: best.c.name, known: kn, d: best.d } : null;
+    };
+    var ctlList = null;
     o.measured.forEach(function (m) {
       var nm = String(m.name).trim();
+      // 點名是流水號、代碼欄寫的是點名（例如 1,…,q2、6,…,hl86）→ 代碼當成點名來對舊點
+      var alias = codeAlias(m);
+      var tag = function (k) { return alias && k.toUpperCase() !== nm.toUpperCase() ? k + '（點 ' + nm + '）' : k; };
+      if (alias) {
+        var sq = toSys(m.y, m.x);
+        if (/^Q/.test(alias)) {
+          var hq = d20recs.filter(function (r) { return r.name.toUpperCase() === alias; }).map(function (r) { return { r: r, d: hypot(r.y - sq[0], r.x - sq[1]) }; }).sort(function (a, b) { return a.d - b.d; })[0];
+          if (hq && hq.d < 0.5) { checks.push({ name: tag(hq.r.name), kind: '補點', meas: [m.y, m.x], known: [hq.r.y, hq.r.x], src: m.src }); return; }
+        } else {
+          var hc = ctlNear(alias, m.y, m.x, 0.5);
+          if (hc) { checks.push({ name: tag(hc.name), kind: '圖根點', meas: [m.y, m.x], known: hc.known, src: m.src }); return; }
+        }
+      }
+      // 點名沒寫、但位置就在舊補點／圖根點上（10 公分內）→ 自動當成重測的舊點
+      if (!/^Q/i.test(nm)) {
+        var s2 = toSys(m.y, m.x), oq = null;
+        d20recs.forEach(function (r) { var d = hypot(r.y - s2[0], r.x - s2[1]); if (d < 0.10 && (!oq || d < oq.d)) oq = { r: r, d: d }; });
+        if (oq) { checks.push({ name: oq.r.name + '（點 ' + nm + '）', kind: '補點', meas: [m.y, m.x], known: [oq.r.y, oq.r.x], src: m.src }); autoHit.push(nm + '→' + oq.r.name); return; }
+        if (!ctlList) { ctlList = []; Object.keys(o.ctlByName || {}).forEach(function (k) { o.ctlByName[k].forEach(function (c) { ctlList.push(c); }); }); }
+        var oc = null;
+        ctlList.forEach(function (c) { if (Math.abs(c.y - m.y) > 0.1 || Math.abs(c.x - m.x) > 0.1) return; var d = hypot(c.y - m.y, c.x - m.x); if (d < 0.10 && (!oc || d < oc.d)) oc = { c: c, d: d }; });
+        if (oc && oc.c.name.toUpperCase() !== nm.toUpperCase()) {
+          var hc2 = ctlNear(oc.c.name.toUpperCase(), m.y, m.x, 0.10);
+          if (hc2) { checks.push({ name: hc2.name + '（點 ' + nm + '）', kind: '圖根點', meas: [m.y, m.x], known: hc2.known, src: m.src }); autoHit.push(nm + '→' + hc2.name); return; }
+        }
+      }
       // 重測到的舊點：數字點號對到這段界址點、或點名對到圖根點（實測 97 跟換算 97 差 0.5 m 內）
       if (/^\d+$/.test(nm) && o.coa[String(+nm)]) {
         var c = o.coa[String(+nm)];
@@ -2931,8 +2990,12 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         if (old) { checks.push({ name: nm + (old.name.toUpperCase() !== nm.toUpperCase() ? '（D20 的 ' + old.name + '）' : ''), kind: '補點', meas: [m.y, m.x], known: [old.y, old.x], src: m.src }); return; }
         newPts.push({ kind: '補點', name: nm, code: '', y97: m.y, x97: m.x, src: m.src }); return;
       }
-      newPts.push({ kind: '參考點', name: nm, code: m.code == null ? '' : String(m.code).trim(), y97: m.y, x97: m.x, src: m.src });
+      var cd = m.code == null ? '' : String(m.code).trim();
+      if (cd && !/^\d{1,2}$/.test(cd)) { badCode.push(nm + '（' + cd + '）'); cd = String(o.refCode || '11'); }
+      newPts.push({ kind: '參考點', name: nm, code: cd, y97: m.y, x97: m.x, src: m.src });
     });
+    if (autoHit.length) report.push(['info', '位置就在舊點上（10 公分內），自動當成重測舊點拿來檢核：' + autoHit.join('、')]);
+    if (badCode.length) report.push(['warn', '這些點的代碼不是數字編碼、也對不到舊點，寫成參考點時編碼先用 ' + (o.refCode || '11') + '：' + badCode.join('、')]);
     if (skipped.length) report.push(['info', '不寫入、也不是已知點：' + skipped.slice(0, 10).join('、') + (skipped.length > 10 ? '…' : '')]);
     // 補點：照補點清冊編號（97 坐標比，同一點不重複）
     var reg = (o.registry && o.registry.points) || [], next = (o.registry && o.registry.maxNum) || 0, assigned = [];
@@ -2978,11 +3041,88 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     if (fit.n < 3 && checks.length) report.push(['warn', '重測舊點少於 3 點，只做平移，沒辦法檢查旋轉、尺度']);
     if (fit.n >= 3 && fit.rms > tol) report.push(['error', '局部修正後殘差 RMS ' + fmtDist(fit.rms) + ' 超過容許差，這一區舊點彼此對不起來，請先確認再寫入']);
     newPts.forEach(function (p) { var q = fit.apply(p.y0, p.x0); p.y = r3(q[0]); p.x = r3(q[1]); });
+    var dupe = [];
+    newPts.forEach(function (p, i) { newPts.slice(i + 1).forEach(function (q) { var d = hypot(p.y - q.y, p.x - q.x); if (d <= NEAR_M) dupe.push(p.name + ' 跟 ' + q.name + ' 差 ' + fmtDist(d)); }); });
+    if (dupe.length) report.push(['warn', '這批裡有點彼此很近，可能是同一點測兩次（會各寫一筆，不要的請刪掉再上傳）：' + dupe.join('、')]);
     // 規劃寫入（規則同資料轉換系統）
     var plan = planDbfWrite({ d14: o.d14, d20: o.d20, points: newPts.map(function (p, i) { return { key: 'p' + i, name: p.name, code: p.code, y: p.y, x: p.x, src: fileName(p.src || '') }; }) });
     plan.rows.forEach(function (r, i) { r.kind = newPts[i].kind; r.y97 = newPts[i].y97; r.x97 = newPts[i].x97; r.orig_name = newPts[i].orig_name || newPts[i].name; r.reg = newPts[i].reg; });
     return { report: report, plan: plan, checks: checks, fit: { type: fit.type, n: fit.n, rms: fit.rms, shift: fit.shift, scalePpm: fit.scalePpm, rotSec: fit.rotSec },
       newPts: newPts, maxNum: next, frame: lbl };
+  }
+
+  // ───────────────────────── 圖解區（D2B／D2C／D2D，只當參考圖層） ─────────────────────────
+  /** 讀圖解區的 D2C（點）、D2D（線）、D2B（地號邊界）→ 每段一份 */
+  function parseGraphic(files) {
+    var by = {};
+    files.forEach(function (f) {
+      var e = extName(f.path); if (!/^D2[BCD]$/.test(e)) return;
+      var sec = sectionOf(f.path) || baseName(f.path).toUpperCase();
+      (by[sec] = by[sec] || {})[e] = f;
+    });
+    return Object.keys(by).sort().map(function (sec) {
+      var g = by[sec], out = { section: sec, pts: {}, lines: [], parcels: [], files: Object.keys(g).sort() };
+      if (!g.D2C) { out.error = '少了 D2C（坐標）'; return out; }
+      parseDbfRaw(g.D2C.bytes).records.forEach(function (r) {
+        var v = r.values, y = parseFloat(v.COT_Y), x = parseFloat(v.COT_X);
+        if (!r.deleted && y > 1e6 && x > 1e5) out.pts[String(parseInt(v.COT_NUMBER, 10))] = [y, x];
+      });
+      if (g.D2D) parseDbfRaw(g.D2D.bytes).records.forEach(function (r) {
+        if (r.deleted) return;
+        var a = String(parseInt(r.values.LIN_TOP, 10)), b = String(parseInt(r.values.LIN_BOT, 10));
+        if (a !== b && out.pts[a] && out.pts[b]) out.lines.push([a, b]);
+      });
+      if (g.D2B) {
+        var cur = null;
+        parseDbfRaw(g.D2B.bytes).records.forEach(function (r) {
+          var v = r.values; if (r.deleted || !(parseInt(v.O_SECTION, 10) > 0)) { cur = null; return; }
+          var k = parcelLabel(v.O_PARCEL, v.O_PARCEL_E);
+          if (!cur || cur.k !== k) { cur = { k: k, n: [] }; out.parcels.push(cur); }
+          for (var i = 1; i <= 8; i++) { var n = parseInt(v['COORD_' + i], 10); if (n > 0 && out.pts[String(n)]) cur.n.push(String(n)); }
+        });
+        out.parcels = out.parcels.filter(function (p) { return p.n.length >= 3; });
+      }
+      return out;
+    });
+  }
+  /**
+   * 圖解區的坐標是 67 還是 97：拿旁邊數值區的界址點（97）比，
+   * 兩種假設（原值就是 97／原值是 67 要換）看哪一種讓較多數值點落在圖解線 5 公尺內。
+   */
+  function graphicDatum(g, numPts) {
+    var keys = Object.keys(g.pts); if (!keys.length) return { datum: null, hit97: 0, hit67: 0 };
+    var vs = keys.map(function (k) { return g.pts[k]; });
+    var test = function (conv) {
+      var cell = 10, grd = {};
+      vs.forEach(function (p) { var q = conv(p); var kk = Math.floor(q[0] / cell) + ',' + Math.floor(q[1] / cell); (grd[kk] = grd[kk] || []).push(q); });
+      var hit = 0;
+      numPts.forEach(function (p) {
+        var gy = Math.floor(p[0] / cell), gx = Math.floor(p[1] / cell), ok = false;
+        for (var a = -1; a <= 1 && !ok; a++) for (var b = -1; b <= 1 && !ok; b++) (grd[(gy + a) + ',' + (gx + b)] || []).some(function (q) { if (hypot(q[0] - p[0], q[1] - p[1]) < 5) { ok = true; } return ok; });
+        if (ok) hit++;
+      });
+      return hit;
+    };
+    var h97 = test(function (p) { return p; }), h67 = test(function (p) { return twd67to97(p[0], p[1]); });
+    var datum = Math.max(h97, h67) >= 20 && Math.max(h97, h67) >= 3 * Math.min(h97, h67) ? (h97 >= h67 ? 'TWD97' : 'TWD67') : null;
+    return { datum: datum, hit97: h97, hit67: h67 };
+  }
+  /** 圖解區 → 地圖用的資料（經緯度）。67 用概略公式換（圖解本身誤差就有幾公尺） */
+  function buildGraphicLayer(g, datum) {
+    var to97 = datum === 'TWD67' ? function (p) { return twd67to97(p[0], p[1]); } : function (p) { return p; };
+    var LL = {}, r7 = function (v) { return Math.round(v * 1e7) / 1e7; };
+    Object.keys(g.pts).forEach(function (k) { var q = to97(g.pts[k]); var l = tm2ToLatLng(q[0], q[1]); LL[k] = [r7(l[0]), r7(l[1])]; });
+    var lines = []; g.lines.forEach(function (l) { var a = LL[l[0]], b = LL[l[1]]; lines.push(a[0], a[1], b[0], b[1]); });
+    var parcels = g.parcels.map(function (p) {
+      var r = [], cy = 0, cx = 0, s2 = 0, ring = p.n.map(function (n) { return to97(g.pts[n]); });
+      p.n.forEach(function (n) { r.push(LL[n][0], LL[n][1]); cy += LL[n][0]; cx += LL[n][1]; });
+      for (var i = 0; i < ring.length; i++) { var a = ring[i], b = ring[(i + 1) % ring.length]; s2 += a[0] * b[1] - b[0] * a[1]; }
+      return { k: p.k, c: [r7(cy / p.n.length), r7(cx / p.n.length)], r: r, a: Math.round(Math.abs(s2) / 2) };
+    });
+    var all = Object.keys(LL).map(function (k) { return LL[k]; });
+    var bb = all.length ? [Math.min.apply(null, all.map(function (p) { return p[0]; })), Math.min.apply(null, all.map(function (p) { return p[1]; })),
+      Math.max.apply(null, all.map(function (p) { return p[0]; })), Math.max.apply(null, all.map(function (p) { return p[1]; }))] : null;
+    return { section: g.section, datum: datum, bbox: bb, lines: lines, parcels: parcels, nPts: all.length, nLines: g.lines.length };
   }
 
   // ───────────────────────── 第二層：外業檢核點 ─────────────────────────
@@ -3099,6 +3239,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     matchChecks: matchChecks, classifyChecks: classifyChecks, addSupplement: addSupplement,
     localFit: localFit, planWriteBack: planWriteBack, parseDbfRaw: parseDbfRaw, appendDbf: appendDbf, planDbfWrite: planDbfWrite, buildDbfFiles: buildDbfFiles,
     parseGnssCsv: parseGnssCsv, parseNikonRaw: parseNikonRaw, tm2Scale: tm2Scale,
+    codeAlias: codeAlias, parseGraphic: parseGraphic, graphicDatum: graphicDatum, buildGraphicLayer: buildGraphicLayer,
     parseParamInp: parseParamInp, parseCtlFix: parseCtlFix, sectionNums: sectionNums, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED
@@ -3365,6 +3506,52 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report }; });
     });
   }
+  // ── 圖解區（只當參考圖層，不參與換算） ──
+  function graphicList() { return readJson('底圖/圖解/清單.json').catch(function () { return []; }); }
+  function uploadGraphic(body) {
+    return Core.expandZips(body.items).then(function (files) {
+      var gs = Core.parseGraphic(files), report = [];
+      if (!gs.length) throw new Error('沒找到圖解區的 D2C／D2D／D2B 檔（檔名要像 KC0336.D2C）');
+      return graphicList().then(function (list) {
+        var p = Promise.resolve();
+        gs.forEach(function (g) {
+          if (g.error) { report.push(['error', g.section + '：' + g.error]); return; }
+          p = p.then(function () {
+            // 找可能重疊的數值段（兩種假設的範圍都看）拿來判斷坐標系統
+            var ks = Object.keys(g.pts), ys = ks.map(function (k) { return g.pts[k][0]; }), xs = ks.map(function (k) { return g.pts[k][1]; });
+            var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+            var boxes = [[y0, x0, y1, x1], [y0 - 260, x0 + 780, y1 - 160, x1 + 880]].map(function (b) {
+              var a = Core.tm2ToLatLng(b[0] - 300, b[1] - 300), c = Core.tm2ToLatLng(b[2] + 300, b[3] + 300); return [a[0], a[1], c[0], c[1]];
+            });
+            var secs = (S.index && S.index.sections || []).filter(function (s) {
+              return s.bbox && s.section !== g.section && boxes.some(function (b) { return !(s.bbox[0] > b[2] || b[0] > s.bbox[2] || s.bbox[1] > b[3] || b[1] > s.bbox[3]); });
+            }).map(function (s) { return s.section; });
+            return Promise.all(secs.map(function (sc) { return readCoa(sc).catch(function () { return {}; }); })).then(function (cs) {
+              var num = []; cs.forEach(function (c) { Object.keys(c).forEach(function (k) { num.push([c[k][0], c[k][1]]); }); });
+              var dt = Core.graphicDatum(g, num), want = body.datum && body.datum !== 'auto' ? body.datum : null;
+              var datum = want || dt.datum || 'TWD67';
+              var how = want ? '你指定 ' + want : dt.datum ? '自動判斷（跟旁邊數值區比：當 97 有 ' + dt.hit97 + ' 點對得上、當 67 有 ' + dt.hit67 + ' 點）' : '旁邊沒有數值區可以比，先當 TWD67';
+              if (want && dt.datum && want !== dt.datum) report.push(['warn', g.section + '：你指定 ' + want + '，但跟旁邊數值區比起來比較像 ' + dt.datum + '（' + dt.hit97 + ' 比 ' + dt.hit67 + '），請確認']);
+              var layer = Core.buildGraphicLayer(g, datum);
+              layer.how = how; layer.at = Date.now(); layer.files = g.files;
+              report.push(['ok', secName(g.section) + '：' + layer.nLines + ' 條線、' + layer.parcels.length + ' 筆地號，坐標 ' + datum + '（' + how + '）' +
+                (layer.parcels.length ? '' : '；沒有地號資料（D2B 沒有段號地號），只能當底圖看')]);
+              list = list.filter(function (x) { return x.section !== g.section; });
+              list.push({ section: g.section, datum: datum, how: how, bbox: layer.bbox, parcels: layer.parcels.length, lines: layer.nLines, at: layer.at, files: g.files });
+              return writeJson('底圖/圖解/' + g.section + '.json', layer);
+            });
+          });
+        });
+        return p.then(function () { list.sort(function (a, b) { return a.section < b.section ? -1 : 1; }); return writeJson('底圖/圖解/清單.json', list); })
+          .then(function () { S.graphic = {}; return { ok: true, report: report }; });
+      });
+    });
+  }
+  function graphicData(sec) {
+    S.graphic = S.graphic || {};
+    if (S.graphic[sec]) return Promise.resolve(S.graphic[sec]);
+    return readJson('底圖/圖解/' + sec + '.json').then(function (d) { S.graphic[sec] = d; return d; });
+  }
   function rebuildFromSaved(progress) {
     return dirOf('底圖/數值原始檔').then(function (d) { return walk(d, '', function (p) { return /\.(coa|bnp|par|ctl|zip)$/i.test(p); }); },
       function () { throw new Error('共用資料夾裡沒有數值原始檔，請先用「更新數值地籍圖」上傳一次'); })
@@ -3510,7 +3697,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           if (e === 'RAW') { var r = Core.parseNikonRaw(Core.decode(f.bytes), { h: 50 }); known = r.known; m = r.shots; }
           else if (e === 'CSV' || e === 'TXT') { var g = Core.parseGnssCsv(Core.decode(f.bytes)); known = g.known; m = g.measured; }
           else return;
-          var fr = frameOf({ known: known, measured: m.filter(function (p) { return !/^\d+$/.test(p.name); }), section: sec }, {});
+          var fr = frameOf({ known: known, measured: m.map(function (p) { var a = Core.codeAlias(p); return a ? { name: a, y: p.y, x: p.x } : p; }).filter(function (p) { return !/^\d+$/.test(p.name); }), section: sec }, {});
           if (fr === 'unknown' && T) {   // 再用這段的界址點號比：對到 97 還是 67 坐標
             var v7 = 0, v9 = 0;
             known.concat(m).forEach(function (p) { var c = /^\d+$/.test(p.name) && coa[String(+p.name)]; if (!c) return; if (Math.hypot(c[0] - p.y, c[1] - p.x) < 1) v9++; if (Math.hypot(c[2] - p.y, c[3] - p.x) < 1) v7++; });
@@ -3653,7 +3840,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         // 67 坐標系的儀器檔：只做 67 內部檢核（實測 vs 已知），不拿來修正轉換
         src67.forEach(function (ins) {
           var kn = {}; ins.known.forEach(function (k) { kn[k.name.toUpperCase()] = k; });
-          ins.measured.forEach(function (p) {
+          (ins.measuredGround || ins.measured).forEach(function (p) {
             var nm = p.name.toUpperCase(), k = kn[nm] || kn[nm.replace(/-\d+$/, '')];
             if (k) res.report.push(['info', '67 內部檢核（' + Core.fileName(ins.file) + '）：' + p.name + ' 實測跟已知 ' + k.name + ' 差 ' + Core.fmtDist(Math.hypot(p.y - k.y, p.x - k.x))]);
           });
@@ -3735,6 +3922,15 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     var p = m ? parcelsIndex().then(function (idx) {
       var key = Core.parcelLabel(m[2], m[3] || '0'), sec = m[1] ? ('0000' + m[1]).slice(-4) : null;
       idx.forEach(function (r) { if (r[1] === key && (!sec || r[0].slice(-4) === sec)) out.push({ type: '地號', label: secName(r[0]) + ' ' + r[1] + ' 地號', section: r[0], parcel: r[1], ll: [r[2], r[3]], area: r[4] }); });
+    }).then(function () {
+      var key = Core.parcelLabel(m[2], m[3] || '0'), sec = m[1] ? ('0000' + m[1]).slice(-4) : null;
+      return graphicList().then(function (gl) {
+        return Promise.all(gl.filter(function (g) { return g.parcels && (!sec || g.section.slice(-4) === sec); }).map(function (g) {
+          return graphicData(g.section).then(function (d) {
+            d.parcels.forEach(function (pp) { if (pp.k === key) out.push({ type: '圖解地號', label: secName(g.section) + ' ' + pp.k + ' 地號（圖解區，僅供參考）', section: g.section, parcel: pp.k, ll: pp.c, area: pp.a, ring: pp.r }); });
+          }, function () {});
+        }));
+      });
     }) : Promise.resolve();
     return p.then(fieldData).then(function (fd) {
       fd.points.filter(function (r) { return r.name.toUpperCase().indexOf(qu) === 0; }).slice(0, 50).forEach(function (r) {
@@ -3774,7 +3970,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {},
           param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3,
           case_tol_cm: S.cfg.case_tol_cm, case_warn_cm: S.cfg.case_warn_cm, case_radius_m: S.cfg.case_radius_m };
-      });
+      }).then(function (info) { return graphicList().then(function (g) { info.graphic = g; return info; }); });
     }
     if (path === '/api/controls') return Promise.resolve(S.controls);
     if (path === '/api/ctl_issues') return S.issues ? Promise.resolve(S.issues) : readJson(vpath('ctl_issues.json')).then(function (d) { S.issues = d; return d; });
@@ -3850,6 +4046,15 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     if (path === '/api/writeback/commit') return writeBackCommit(body);
     if (path === '/api/checks/approve') return loadCfg().then(function () { return setApproved(body); });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
+    if (path === '/api/graphic/upload') return loadCfg().then(function () { return uploadGraphic(body); });
+    if (path === '/api/graphic/list') return graphicList();
+    if ((m = /^\/api\/graphic\/([A-Z]{2}\d{4})$/i.exec(path))) return graphicData(m[1].toUpperCase());
+    if (path === '/api/graphic/delete') {
+      return graphicList().then(function (list) {
+        return writeJson('底圖/圖解/清單.json', list.filter(function (x) { return x.section !== body.section; }));
+      }).then(function () { return dirOf('底圖/圖解').then(function (d) { return d.removeEntry(body.section + '.json'); }).catch(function () {}); })
+        .then(function () { if (S.graphic) delete S.graphic[body.section]; return { ok: true }; });
+    }
     if (path === '/api/params/delete') {
       return dirOf('底圖/轉換參數').then(function (d) { return d.removeEntry(body.file || body.section + '.inp'); })
         .then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true }; });
@@ -3882,7 +4087,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.07-3';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-4';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -3920,6 +4125,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 
   var layers = {
     secBox: L.layerGroup().addTo(map),
+    graphic: L.layerGroup().addTo(map),
     parcel: L.layerGroup().addTo(map),
     cases: L.layerGroup().addTo(map),
     checks: L.layerGroup().addTo(map),
@@ -3932,7 +4138,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     field: L.layerGroup().addTo(map),
     hl: L.layerGroup().addTo(map)
   };
-  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true };
+  var show = { field: true, ref: true, ctl: true, bad: true, links: true, parcel: true, cases: true, checks: true, graphic: true };
 
   var S = { info: null, controls: [], field: null, sections: {}, secCache: {}, secLoading: {}, onlyWho: '' };
 
@@ -4205,7 +4411,54 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     else if (z < PARCEL_ZOOM && show.parcel) t = '再放大一點就會出現地籍線';
     $('zoomHint').textContent = t;
   }
-  function refreshAll() { drawSectionLabels(); refreshParcels(); refreshCtl(); refreshField(); hintZoom(); }
+  // ── 圖解區（參考圖層）──
+  var GRAPHIC_NOTE = '圖解區是紙圖數化的，位置誤差可能有幾公尺，只能當參考，不能拿來放樣或檢核。';
+  S.gCache = {};
+  function graphicPopup(code, p) {
+    return '<div class="pop"><h4>' + esc(secName(code)) + '　' + esc(p.k) + ' 地號 <span class="tag 圖解地號">圖解區</span></h4><table>' +
+      (p.a != null ? '<tr><td>面積（圖上量）</td><td>' + Number(p.a).toLocaleString() + ' ㎡</td></tr>' : '') + '</table>' +
+      '<div class="w">⚠ ' + GRAPHIC_NOTE + '</div>' + timelineHtml(code, p.k) + '</div>';
+  }
+  function graphicLayer(code) {
+    var c = S.gCache[code];
+    if (c.layer) return c.layer;
+    var g = L.layerGroup(), segs = [];
+    for (var i = 0; i < c.lines.length; i += 4) segs.push([[c.lines[i], c.lines[i + 1]], [c.lines[i + 2], c.lines[i + 3]]]);
+    L.polyline(segs, { renderer: renderer, color: '#8a5a00', weight: 1, dashArray: '5 4', opacity: 0.9, interactive: false }).addTo(g);
+    c.parcels.forEach(function (p) {
+      var ring = []; for (var j = 0; j < p.r.length; j += 2) ring.push([p.r[j], p.r[j + 1]]);
+      var poly = L.polygon(ring, { renderer: renderer, stroke: false, fillColor: '#8a5a00', fillOpacity: 0.03 });
+      poly.on('click', function (e) { L.popup().setLatLng(e.latlng).setContent(graphicPopup(code, p)).openOn(map); });
+      g.addLayer(poly);
+    });
+    c.layer = g;
+    return g;
+  }
+  function refreshGraphic() {
+    layers.graphic.clearLayers();
+    var z = map.getZoom();
+    if (!show.graphic || z < CTL_ZOOM) return;
+    var vb = map.getBounds();
+    ((S.info && S.info.graphic) || []).forEach(function (gi) {
+      if (!gi.bbox || !vb.intersects([[gi.bbox[0], gi.bbox[1]], [gi.bbox[2], gi.bbox[3]]])) return;
+      var c = S.gCache[gi.section];
+      if (!c) {
+        S.gCache[gi.section] = { loading: true };
+        api('/api/graphic/' + gi.section).then(function (d) { S.gCache[gi.section] = d; refreshGraphic(); }).catch(function () { delete S.gCache[gi.section]; });
+        return;
+      }
+      if (c.loading) return;
+      layers.graphic.addLayer(graphicLayer(gi.section));
+      if (z >= 18) {
+        var n = 0;
+        c.parcels.forEach(function (p) {
+          if (n > 600 || !vb.contains(p.c)) return; n++;
+          L.marker(p.c, { interactive: false, icon: L.divIcon({ className: '', html: '<span class="plbl glbl">' + esc(p.k) + '</span>', iconSize: [0, 0] }) }).addTo(layers.graphic);
+        });
+      }
+    });
+  }
+  function refreshAll() { drawSectionLabels(); refreshGraphic(); refreshParcels(); refreshCtl(); refreshField(); hintZoom(); }
   map.on('moveend', refreshAll);
 
   document.addEventListener('click', function (e) {
@@ -4282,6 +4535,15 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         L.popup().setLatLng(p.c).setContent(parcelPopup(r.section, p)).openOn(map);
       };
       setTimeout(function () { tryOpen(0); }, 900);
+    } else if (r.type === '圖解地號') {
+      var gring = []; for (var gi = 0; gi < r.ring.length; gi += 2) gring.push([r.ring[gi], r.ring[gi + 1]]);
+      flyTo(r.ll, 18);
+      setTimeout(function () {
+        layers.hl.clearLayers();
+        var ghl = L.polygon(gring, { color: '#f5b400', weight: 5, dashArray: '6 4', fillOpacity: 0.15, interactive: false }).addTo(layers.hl);
+        setTimeout(function () { layers.hl.removeLayer(ghl); }, 8000);
+        L.popup().setLatLng(r.ll).setContent(graphicPopup(r.section, { k: r.parcel, a: r.area })).openOn(map);
+      }, 900);
     } else if (r.type === '圖根點') {
       var p = S.controls.filter(function (x) { return x.id === r.id; })[0];
       flyTo(r.ll, 18, p ? ctlPopup(p) : null);
@@ -4513,6 +4775,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     renderSurveyors();
     renderParams();
     renderChecks();
+    renderGraphic();
     $('exNames').value = (i.param_exclude_names || []).join('\n');
     $('chkTol').value = i.check_tol_cm || 3;
     $('secNames').value = Object.keys(i.section_names || {}).map(function (k) { return k + '=' + i.section_names[k]; }).join('\n');
@@ -4537,6 +4800,34 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     });
   }
   $('issueType').onchange = drawIssues;
+  function renderGraphic() {
+    var gl = (S.info && S.info.graphic) || [];
+    $('grList').innerHTML = gl.length ? '<table class="dt"><tr><th>段</th><th>內容</th><th>坐標</th><th></th></tr>' + gl.map(function (g) {
+      return '<tr><td>' + esc(secName(g.section)) + '</td><td class="small">' + g.lines.toLocaleString() + ' 條線、' + g.parcels.toLocaleString() + ' 筆地號</td><td class="small">' +
+        esc(g.datum) + '<br>' + esc(g.how || '') + '</td><td><button class="ghost" data-gdel="' + esc(g.section) + '">刪除</button></td></tr>';
+    }).join('') + '</table>' : '<div class="small">還沒有圖解區</div>';
+    Array.prototype.forEach.call($('grList').querySelectorAll('[data-gdel]'), function (b) {
+      b.onclick = function () {
+        var sec = b.getAttribute('data-gdel');
+        if (!confirm('刪除圖解區 ' + secName(sec) + '？')) return;
+        api('/api/graphic/delete', { section: sec }).then(function () { delete S.gCache[sec]; return loadInfo(); }).then(function () { renderAdmin(); refreshAll(); });
+      };
+    });
+  }
+  function graphicUpload(list) {
+    if (!list.length) return;
+    busy(true, '讀取圖解區…');
+    Local.fileListToItems(list).then(function (items) { return api('/api/graphic/upload', { items: items, datum: $('grDatum').value }); })
+      .then(function (r) {
+        busy(false); S.gCache = {};
+        $('grMsg').innerHTML = r.report.map(function (x) { return '<div class="msg ' + (x[0] === 'ok' ? 'ok' : x[0]) + '">' + esc(x[1]) + '</div>'; }).join('');
+        return loadInfo().then(function () { renderGraphic(); refreshAll(); });
+      }).catch(function (e) { busy(false); toast('失敗：' + e.message, 10000); });
+  }
+  $('grPickDir').onclick = function () { $('grDir').click(); };
+  $('grPickFile').onclick = function () { $('grFile').click(); };
+  $('grDir').onchange = function () { graphicUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.webkitRelativePath || f.name, file: f }; })); this.value = ''; };
+  $('grFile').onchange = function () { graphicUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; })); this.value = ''; };
   /** 各段 67→97 用什麼方法、準不準；可以改用別份、不用某些點 */
   function renderParams() {
     var secs = ((S.info && S.info.sections) || []).filter(function (x) { return x.datum === 'TWD67'; });

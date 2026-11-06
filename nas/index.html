@@ -178,6 +178,18 @@
         <div id="chkList"></div>
       </div>
       <div class="card">
+        <h3>圖解區（參考圖層）</h3>
+        <p class="small">把圖解區的 <b>KCxxxx.D2B、D2C、D2D</b>（資料夾或 zip）放進來，地圖上會用<b style="color:#8a5a00">咖啡色虛線</b>畫出來、也可以搜尋地號。
+          圖解區是紙圖數化的，位置誤差可能有幾公尺，<b>只當參考</b>，不參與換算和檢核。有地號的版本（D2B 有段號地號）才能點選、搜尋。</p>
+        <div class="row"><label style="margin:0">坐標系統</label><select id="grDatum"><option value="auto">自動判斷（跟旁邊數值區比）</option><option value="TWD67">TWD67</option><option value="TWD97">TWD97</option></select></div>
+        <button id="grPickDir" class="pick">選資料夾</button>
+        <button id="grPickFile" class="pick">選 zip / 檔案</button>
+        <input type="file" id="grDir" webkitdirectory multiple hidden>
+        <input type="file" id="grFile" accept=".zip,.d2b,.d2c,.d2d,.D2B,.D2C,.D2D" multiple hidden>
+        <div id="grMsg"></div>
+        <div id="grList"></div>
+      </div>
+      <div class="card">
         <h3>各段轉換參數（67 → 97）</h3>
         <p class="small">有做過 GPS 共同點的段，把轉換參數資料夾或 zip（裡面有 <b>段號.inp</b>，例如 367.inp）放進來，那一段就改用它，比自動推算準很多。</p>
         <button id="parPickDir" class="pick">選資料夾</button>
@@ -260,6 +272,7 @@
       <label><input type="checkbox" data-layer="checks" checked> <span class="sym arrow">➚</span> 檢核點（實測差）</label>
       <label><input type="checkbox" data-layer="cases" checked> <span class="sym case"></span> 有案件的土地</label>
       <label><input type="checkbox" data-layer="parcel" checked> <span class="sym par"></span> 地籍線</label>
+      <label><input type="checkbox" data-layer="graphic" checked> <span class="sym gpar"></span> 圖解區（參考）</label>
       <div class="lsep"></div>
       <select id="baseLayer">
         <option value="emap">底圖：電子地圖</option>

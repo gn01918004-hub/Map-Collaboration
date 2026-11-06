@@ -256,6 +256,52 @@
       return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report }; });
     });
   }
+  // ── 圖解區（只當參考圖層，不參與換算） ──
+  function graphicList() { return readJson('底圖/圖解/清單.json').catch(function () { return []; }); }
+  function uploadGraphic(body) {
+    return Core.expandZips(body.items).then(function (files) {
+      var gs = Core.parseGraphic(files), report = [];
+      if (!gs.length) throw new Error('沒找到圖解區的 D2C／D2D／D2B 檔（檔名要像 KC0336.D2C）');
+      return graphicList().then(function (list) {
+        var p = Promise.resolve();
+        gs.forEach(function (g) {
+          if (g.error) { report.push(['error', g.section + '：' + g.error]); return; }
+          p = p.then(function () {
+            // 找可能重疊的數值段（兩種假設的範圍都看）拿來判斷坐標系統
+            var ks = Object.keys(g.pts), ys = ks.map(function (k) { return g.pts[k][0]; }), xs = ks.map(function (k) { return g.pts[k][1]; });
+            var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+            var boxes = [[y0, x0, y1, x1], [y0 - 260, x0 + 780, y1 - 160, x1 + 880]].map(function (b) {
+              var a = Core.tm2ToLatLng(b[0] - 300, b[1] - 300), c = Core.tm2ToLatLng(b[2] + 300, b[3] + 300); return [a[0], a[1], c[0], c[1]];
+            });
+            var secs = (S.index && S.index.sections || []).filter(function (s) {
+              return s.bbox && s.section !== g.section && boxes.some(function (b) { return !(s.bbox[0] > b[2] || b[0] > s.bbox[2] || s.bbox[1] > b[3] || b[1] > s.bbox[3]); });
+            }).map(function (s) { return s.section; });
+            return Promise.all(secs.map(function (sc) { return readCoa(sc).catch(function () { return {}; }); })).then(function (cs) {
+              var num = []; cs.forEach(function (c) { Object.keys(c).forEach(function (k) { num.push([c[k][0], c[k][1]]); }); });
+              var dt = Core.graphicDatum(g, num), want = body.datum && body.datum !== 'auto' ? body.datum : null;
+              var datum = want || dt.datum || 'TWD67';
+              var how = want ? '你指定 ' + want : dt.datum ? '自動判斷（跟旁邊數值區比：當 97 有 ' + dt.hit97 + ' 點對得上、當 67 有 ' + dt.hit67 + ' 點）' : '旁邊沒有數值區可以比，先當 TWD67';
+              if (want && dt.datum && want !== dt.datum) report.push(['warn', g.section + '：你指定 ' + want + '，但跟旁邊數值區比起來比較像 ' + dt.datum + '（' + dt.hit97 + ' 比 ' + dt.hit67 + '），請確認']);
+              var layer = Core.buildGraphicLayer(g, datum);
+              layer.how = how; layer.at = Date.now(); layer.files = g.files;
+              report.push(['ok', secName(g.section) + '：' + layer.nLines + ' 條線、' + layer.parcels.length + ' 筆地號，坐標 ' + datum + '（' + how + '）' +
+                (layer.parcels.length ? '' : '；沒有地號資料（D2B 沒有段號地號），只能當底圖看')]);
+              list = list.filter(function (x) { return x.section !== g.section; });
+              list.push({ section: g.section, datum: datum, how: how, bbox: layer.bbox, parcels: layer.parcels.length, lines: layer.nLines, at: layer.at, files: g.files });
+              return writeJson('底圖/圖解/' + g.section + '.json', layer);
+            });
+          });
+        });
+        return p.then(function () { list.sort(function (a, b) { return a.section < b.section ? -1 : 1; }); return writeJson('底圖/圖解/清單.json', list); })
+          .then(function () { S.graphic = {}; return { ok: true, report: report }; });
+      });
+    });
+  }
+  function graphicData(sec) {
+    S.graphic = S.graphic || {};
+    if (S.graphic[sec]) return Promise.resolve(S.graphic[sec]);
+    return readJson('底圖/圖解/' + sec + '.json').then(function (d) { S.graphic[sec] = d; return d; });
+  }
   function rebuildFromSaved(progress) {
     return dirOf('底圖/數值原始檔').then(function (d) { return walk(d, '', function (p) { return /\.(coa|bnp|par|ctl|zip)$/i.test(p); }); },
       function () { throw new Error('共用資料夾裡沒有數值原始檔，請先用「更新數值地籍圖」上傳一次'); })
@@ -401,7 +447,7 @@
           if (e === 'RAW') { var r = Core.parseNikonRaw(Core.decode(f.bytes), { h: 50 }); known = r.known; m = r.shots; }
           else if (e === 'CSV' || e === 'TXT') { var g = Core.parseGnssCsv(Core.decode(f.bytes)); known = g.known; m = g.measured; }
           else return;
-          var fr = frameOf({ known: known, measured: m.filter(function (p) { return !/^\d+$/.test(p.name); }), section: sec }, {});
+          var fr = frameOf({ known: known, measured: m.map(function (p) { var a = Core.codeAlias(p); return a ? { name: a, y: p.y, x: p.x } : p; }).filter(function (p) { return !/^\d+$/.test(p.name); }), section: sec }, {});
           if (fr === 'unknown' && T) {   // 再用這段的界址點號比：對到 97 還是 67 坐標
             var v7 = 0, v9 = 0;
             known.concat(m).forEach(function (p) { var c = /^\d+$/.test(p.name) && coa[String(+p.name)]; if (!c) return; if (Math.hypot(c[0] - p.y, c[1] - p.x) < 1) v9++; if (Math.hypot(c[2] - p.y, c[3] - p.x) < 1) v7++; });
@@ -544,7 +590,7 @@
         // 67 坐標系的儀器檔：只做 67 內部檢核（實測 vs 已知），不拿來修正轉換
         src67.forEach(function (ins) {
           var kn = {}; ins.known.forEach(function (k) { kn[k.name.toUpperCase()] = k; });
-          ins.measured.forEach(function (p) {
+          (ins.measuredGround || ins.measured).forEach(function (p) {
             var nm = p.name.toUpperCase(), k = kn[nm] || kn[nm.replace(/-\d+$/, '')];
             if (k) res.report.push(['info', '67 內部檢核（' + Core.fileName(ins.file) + '）：' + p.name + ' 實測跟已知 ' + k.name + ' 差 ' + Core.fmtDist(Math.hypot(p.y - k.y, p.x - k.x))]);
           });
@@ -626,6 +672,15 @@
     var p = m ? parcelsIndex().then(function (idx) {
       var key = Core.parcelLabel(m[2], m[3] || '0'), sec = m[1] ? ('0000' + m[1]).slice(-4) : null;
       idx.forEach(function (r) { if (r[1] === key && (!sec || r[0].slice(-4) === sec)) out.push({ type: '地號', label: secName(r[0]) + ' ' + r[1] + ' 地號', section: r[0], parcel: r[1], ll: [r[2], r[3]], area: r[4] }); });
+    }).then(function () {
+      var key = Core.parcelLabel(m[2], m[3] || '0'), sec = m[1] ? ('0000' + m[1]).slice(-4) : null;
+      return graphicList().then(function (gl) {
+        return Promise.all(gl.filter(function (g) { return g.parcels && (!sec || g.section.slice(-4) === sec); }).map(function (g) {
+          return graphicData(g.section).then(function (d) {
+            d.parcels.forEach(function (pp) { if (pp.k === key) out.push({ type: '圖解地號', label: secName(g.section) + ' ' + pp.k + ' 地號（圖解區，僅供參考）', section: g.section, parcel: pp.k, ll: pp.c, area: pp.a, ring: pp.r }); });
+          }, function () {});
+        }));
+      });
     }) : Promise.resolve();
     return p.then(fieldData).then(function (fd) {
       fd.points.filter(function (r) { return r.name.toUpperCase().indexOf(qu) === 0; }).slice(0, 50).forEach(function (r) {
@@ -665,7 +720,7 @@
           ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {},
           param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3,
           case_tol_cm: S.cfg.case_tol_cm, case_warn_cm: S.cfg.case_warn_cm, case_radius_m: S.cfg.case_radius_m };
-      });
+      }).then(function (info) { return graphicList().then(function (g) { info.graphic = g; return info; }); });
     }
     if (path === '/api/controls') return Promise.resolve(S.controls);
     if (path === '/api/ctl_issues') return S.issues ? Promise.resolve(S.issues) : readJson(vpath('ctl_issues.json')).then(function (d) { S.issues = d; return d; });
@@ -741,6 +796,15 @@
     if (path === '/api/writeback/commit') return writeBackCommit(body);
     if (path === '/api/checks/approve') return loadCfg().then(function () { return setApproved(body); });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
+    if (path === '/api/graphic/upload') return loadCfg().then(function () { return uploadGraphic(body); });
+    if (path === '/api/graphic/list') return graphicList();
+    if ((m = /^\/api\/graphic\/([A-Z]{2}\d{4})$/i.exec(path))) return graphicData(m[1].toUpperCase());
+    if (path === '/api/graphic/delete') {
+      return graphicList().then(function (list) {
+        return writeJson('底圖/圖解/清單.json', list.filter(function (x) { return x.section !== body.section; }));
+      }).then(function () { return dirOf('底圖/圖解').then(function (d) { return d.removeEntry(body.section + '.json'); }).catch(function () {}); })
+        .then(function () { if (S.graphic) delete S.graphic[body.section]; return { ok: true }; });
+    }
     if (path === '/api/params/delete') {
       return dirOf('底圖/轉換參數').then(function (d) { return d.removeEntry(body.file || body.section + '.inp'); })
         .then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true }; });

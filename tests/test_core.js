@@ -216,6 +216,15 @@ function dbf(fields, rows) {
     const q97 = T0.apply(+oldQ.CTL_Y, +oldQ.CTL_X);
     const r2 = Core.planWriteBack({ section: 'KC9999', T: T0, measured: [{ name: 'Q77', y: q97[0] + 0.01, x: q97[1], src: 'x' }], coa, ctlByName: {}, d14: Core.parseDbfRaw(files.d14), d20: q20, registry: { points: [], maxNum: 58 }, svCode: 'W' });
     assert.strictEqual(r2.plan.toD20.length, 0); assert.strictEqual(r2.checks[0].kind, '補點');
+    // 點名是流水號、代碼寫點名（7,…,q77）：代碼對到 D20 的補點 → 舊點；流水號但位置就在舊補點上 → 也是舊點；代碼不是數字的新點 → 編碼 11
+    assert.strictEqual(Core.codeAlias({ code: 'hl86' }), 'HL86'); assert.strictEqual(Core.codeAlias({ code: '03' }), '');
+    const r3 = Core.planWriteBack({ section: 'KC9999', T: T0, measured: [
+      { name: '7', code: oldQ.CTL_NAME.trim().toLowerCase(), y: q97[0] + 0.02, x: q97[1], src: 'x' },
+      { name: '8', code: '', y: q97[0] - 0.03, x: q97[1], src: 'x' },
+      { name: '9', code: 'hl1', y: q97[0] + 20, x: q97[1], src: 'x' }],
+      coa, ctlByName: {}, d14: Core.parseDbfRaw(files.d14), d20: q20, registry: { points: [], maxNum: 58 }, svCode: 'W' });
+    assert.strictEqual(r3.checks.length, 2); assert.ok(r3.checks.every(c => c.kind === '補點'));
+    assert.strictEqual(r3.plan.toD14.length, 1); assert.ok(/\.11$/.test(r3.plan.toD14[0].out));
     assert.strictEqual(Core.parseDbfRaw(files.d14).nrec, 2); assert.strictEqual(Core.parseDbfRaw(files.d20).nrec, 2);
   }
 

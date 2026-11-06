@@ -294,6 +294,7 @@
       chks.forEach(function (c) { c.ll = Core.ll(c.meas[0], c.meas[1]); c.approved = !!ak[c.key]; });
       return { points: pts, used: Object.keys(used).map(function (k) { return used[k]; }), links: links, history: Core.parcelHistory(bs),
         checks: chks, approved: appr, check_tol_cm: S.cfg.check_tol_cm || 3,
+        backsights: [].concat.apply([], bs.map(function (b) { return (b.backsights || []).map(function (x) { return Object.assign({ surveyor: b.surveyor, created: b.created }, x); }); })),
         surveyors: S.cfg.surveyors, case_types: S.cfg.case_types,
         batches: bs.map(function (b) {
           return { id: b.id, surveyor: b.surveyor, note: b.note, created: b.created, sections: (b.sections || []).join(','), stats: b.stats,
@@ -326,6 +327,29 @@
     return loadBatches(true).then(function (bs) { return Core.buildRegistry(bs, name, sv ? sv.code : ''); });
   }
   var CLS = { ok: '在容許差內', area: '附近好幾點都差不多 → 這一區轉換有偏差', single: '只有這點跟旁邊不同 → 點本身的細部差', lone: '附近檢核點不夠，還看不出是哪一種', wrong: '差超過 1 公尺，可能點名對錯' };
+  /** 儀器檔是 67 還是 97：已知點跟圖根點（換算後 97／原始 67）對，對不到就看段 */
+  function frameOf(ins, bnd) {
+    var v97 = 0, v67 = 0;
+    var vote = function (k, tol) {
+      (S.ctlByName[k.name.toUpperCase()] || []).forEach(function (c) {
+        if (Math.hypot(c.y - k.y, c.x - k.x) < tol) v97++;
+        (c.raw || []).forEach(function (r) { if (Math.hypot(r[0] - k.y, r[1] - k.x) < tol) v67++; });
+      });
+    };
+    ins.known.forEach(function (k) { vote(k, 0.02); });
+    ins.measured.forEach(function (k) { vote(k, 0.5); });   // 實測的圖根點：差幾公分，用 0.5 公尺判斷
+    if (v97 || v67) return v97 >= v67 ? 'TWD97' : 'TWD67';
+    // 對不到圖根點（例如都是補點）：看離這次上傳的 D14 界址點（這段系統的坐標）近不近
+    var b = bnd && bnd[ins.section], near = Infinity;
+    if (b) ins.known.concat(ins.measured).slice(0, 50).forEach(function (k) {
+      Object.keys(b).forEach(function (n) { var c = b[n]; var d = Math.hypot(c[0] - k.y, c[1] - k.x); if (d < near) near = d; });
+    });
+    if (near < 300) {
+      var sec = (S.index.sections || []).filter(function (x) { return x.section === ins.section; })[0];
+      return sec && sec.datum === 'TWD67' ? 'TWD67' : 'TWD97';
+    }
+    return 'unknown';
+  }
   function chkTol() { return (S.cfg.check_tol_cm || 3) / 100; }
   /** 全部上傳裡的檢核點；有 67 坐標的用「現在的參數」重算換算值（確認過的修正會讓差變小） */
   function allChecks(bs) {
@@ -363,21 +387,41 @@
         res.blocking = res.report.filter(function (r) { return r[0] === 'error'; }).length + (pl.parcels.length ? 0 : 1);
         if (!body.caseType) { res.report.unshift(['error', '請選案件種類']); res.blocking++; }
         res.code = sv.code;
-        // 實測檢核點（選填）
-        if (body.checkFiles && body.checkFiles.length) {
-          var meas = [];
-          body.checkFiles.forEach(function (f) { meas = meas.concat(Core.parseCsvPoints(Core.decode(f.bytes))); });
-          var mc = Core.matchChecks(meas, { bnd: res.bnd, sections: res.sections, trans: S.trans, ctlByName: S.ctlByName });
+        // 實測檢核點：選填的檢核點檔＋儀器檔裡有點名的實測點（97 坐標的才拿來檢核轉換）
+        var meas = [], src67 = [];
+        (body.checkFiles || []).forEach(function (f) { Core.parseCsvPoints(Core.decode(f.bytes)).forEach(function (p) { p.src = f.path; meas.push(p); }); });
+        res.backsights = [];
+        (res.instr || []).forEach(function (ins) {
+          var fr = frameOf(ins, res.bnd);
+          ins.frame = fr;
+          (ins.backsights || []).forEach(function (b) { res.backsights.push({ section: ins.section, station: b.station, back: b.back, coord: b.coord, raw: b.raw, grid: b.grid, frame: fr, file: Core.fileName(ins.file) }); });
+          if (fr === 'TWD97') ins.measured.forEach(function (p) { meas.push({ name: p.name, y: p.y, x: p.x, src: ins.file }); });
+          else if (fr === 'TWD67') src67.push(ins);
+          else if (ins.measured.length) res.report.push(['warn', Core.fileName(ins.file) + '：看不出是 67 還是 97 坐標（已知點對不到圖根點、也不在這次上傳的段附近），實測點先不拿來檢核']);
+        });
+        // 67 坐標系的儀器檔：只做 67 內部檢核（實測 vs 已知），不拿來修正轉換
+        src67.forEach(function (ins) {
+          var kn = {}; ins.known.forEach(function (k) { kn[k.name.toUpperCase()] = k; });
+          ins.measured.forEach(function (p) {
+            var nm = p.name.toUpperCase(), k = kn[nm] || kn[nm.replace(/-\d+$/, '')];
+            if (k) res.report.push(['info', '67 內部檢核（' + Core.fileName(ins.file) + '）：' + p.name + ' 實測跟已知 ' + k.name + ' 差 ' + Core.fmtDist(Math.hypot(p.y - k.y, p.x - k.x))]);
+          });
+          res.report.push(['info', Core.fileName(ins.file) + ' 是 TWD67 坐標（' + ins.section + '），實測點不拿來檢核 67→97 轉換']);
+        });
+        if (meas.length) {
+          // 點名後面的 -1、-2（同一點重測）對不到時，用原點名再對一次
+          meas.forEach(function (m) { if (!S.ctlByName[m.name.toUpperCase()] && /-\d+$/.test(m.name) && S.ctlByName[m.name.toUpperCase().replace(/-\d+$/, '')]) { m.orig = m.name; m.name = m.name.replace(/-\d+$/, ''); } });
+          var mc = Core.matchChecks(meas, { bnd: (body.checkFiles || []).length ? res.bnd : {}, sections: res.sections, trans: S.trans, ctlByName: S.ctlByName });
           var prev = allChecks(live);
           Core.classifyChecks(prev.concat(mc.checks), { tol: chkTol(), range: S.cfg.check_range_m || 150 });
           res.checks = mc.checks;
-          var cnt = {}; mc.checks.forEach(function (c) { cnt[c.cls] = (cnt[c.cls] || 0) + 1; });
           res.report.push(['ok', '實測檢核點 ' + meas.length + ' 點，對到已知點 ' + mc.checks.length + ' 點' + (mc.unmatched.length ? '（對不到：' + mc.unmatched.slice(0, 8).join('、') + (mc.unmatched.length > 8 ? '…' : '') + '）' : '')]);
           mc.checks.filter(function (c) { return c.cls !== 'ok'; }).forEach(function (c) {
             res.report.push([c.cls === 'wrong' ? 'warn' : 'info', '檢核點 ' + c.name + '（' + c.kind + '）實測跟換算差 ' + Core.fmtDist(c.d) + '：' + CLS[c.cls]]);
           });
           res.stats['檢核點'] = mc.checks.length;
         }
+        delete res.instr;
         delete res.bnd;
         return res;
       });
@@ -392,7 +436,7 @@
       var rec = { version: 2, surveyor: body.surveyor, code: res.code, caseType: body.caseType, caseNo: body.caseNo || '', note: body.note || '',
         created: created, sections: res.sections, stats: res.stats, report: res.report, maxNum: res.maxNum || 0,
         parcels: res.parcels.map(function (p) { return { section: p.section, parcel: p.parcel, found: p.found, ring: p.ring || null }; }),
-        points: res.points, used: res.used, links: res.links, checks: res.checks || [], files: keep.map(function (f) { return f.path; }).concat((body.checkFiles || []).map(function (f) { return '檢核點/' + f.path; })) };
+        points: res.points, used: res.used, links: res.links, checks: res.checks || [], backsights: res.backsights || [], files: keep.map(function (f) { return f.path; }).concat((body.checkFiles || []).map(function (f) { return '檢核點/' + f.path; })) };
       var p = Promise.resolve();
       keep.forEach(function (f) {
         var parts = f.path.split('/').filter(function (x) { return x && x !== '.' && x !== '..'; });

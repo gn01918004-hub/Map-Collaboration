@@ -1107,7 +1107,7 @@
   function isBoundaryName(n) { return /^\d+(\.\d+)?$/.test(n); }
   function refName(num, ref) { return parseInt(num, 10) + '.' + ('0' + parseInt(ref, 10)).slice(-2); }
 
-  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|zip)$/i;
+  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|raw|zip)$/i;
   function wanted(p) { return WANT.test(p); }
 
   /** 「123, 124-1」「1114 123、1114 124之2」→ [{section: 'KC1114'|null, key: '123'}]；看不懂的放 bad */
@@ -1212,8 +1212,24 @@
         });
         if (setups.length) report.push(['info', sec + '：' + fileName(f.path) + ' 有 ' + setups.length + ' 次設站']);
       });
+      // 儀器檔：已知點 → 用到的圖根點；實測點 → 檢核點候選（數字點名是細部點，不當檢核點）
+      sd.instr = [];
       (byExt.CSV || []).concat((byExt.TXT || []).filter(function (f) { return !looksLikeB90(decode(f.bytes)); })).forEach(function (f) {
-        parseCsvPoints(decode(f.bytes)).forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'CSV 儀器檔'); });
+        var g = parseGnssCsv(decode(f.bytes));
+        g.known.forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'CSV 儀器檔'); });
+        var named = g.measured.filter(function (p) { return !isBoundaryName(p.name); });
+        if (g.measured.length) report.push(['info', sec + '：' + fileName(f.path) + ' 有實測點 ' + g.measured.length + ' 點' + (named.length ? '（有點名的 ' + named.length + ' 點會拿來當檢核點）' : '（都是細部點號）')]);
+        sd.instr.push({ file: f.path, type: 'GNSS', known: g.known, measured: named });
+      });
+      (byExt.RAW || []).forEach(function (f) {
+        var r = parseNikonRaw(decode(f.bytes), opts.raw);
+        r.known.forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'Nikon RAW 已知點'); });
+        r.backsights.forEach(function (b) {
+          var d0 = (b.raw - b.coord) * 1000, d1 = (b.grid - b.coord) * 1000;
+          report.push([Math.min(Math.abs(d0), Math.abs(d1)) > 20 ? 'warn' : 'info', sec + '：後視檢核 ' + b.station + '→' + b.back + '（' + b.coord.toFixed(1) + ' m）坐標反算跟觀測差：不改正 ' + d0.toFixed(1) + ' mm、改算到平面 ' + d1.toFixed(1) + ' mm']);
+        });
+        var named = r.shots.filter(function (p) { return !isBoundaryName(p.name); });
+        sd.instr.push({ file: f.path, type: 'RAW', known: r.known, measured: named, backsights: r.backsights });
       });
       sd.finish = function () {
         usedOrder = usedOrder.filter(function (k) { return !secPts['補點|' + k]; });
@@ -1261,8 +1277,8 @@
     }
     Object.keys(secData).sort().forEach(function (s) { secData[s].finish(); });
     if (!Object.keys(groups).length) report.push(['error', '找不到重測系統的資料（需要 KCxxxx.D20、D14、D13、L02 或 B90 等檔案）']);
-    var bnd = {}; Object.keys(secData).forEach(function (k) { bnd[k] = secData[k].bnd; });
-    return { points: points, links: links, used: used, parcels: parcels, report: report, sections: Object.keys(groups).sort(), bnd: bnd };
+    var bnd = {}, instr = []; Object.keys(secData).forEach(function (k) { bnd[k] = secData[k].bnd; (secData[k].instr || []).forEach(function (x) { x.section = k; instr.push(x); }); });
+    return { points: points, links: links, used: used, parcels: parcels, report: report, sections: Object.keys(groups).sort(), bnd: bnd, instr: instr };
   }
 
   /** 補點清冊：某位測量員全部上傳（不含已刪除）的補點；最大編號連已刪除的也算，號碼不會重複用 */
@@ -1294,7 +1310,10 @@
       (ctx.ctlByName[u.name.toUpperCase()] || []).forEach(function (p) {
         [[p.y, p.x]].concat(p.raw || []).forEach(function (c) { var d = hypot(c[0] - u.y, c[1] - u.x); if (!best || d < best[1]) best = [p, d]; });
       });
-      if (!best) {
+      if (best && best[1] > 5) {   // 同名但差好幾公尺以上：不是同一點（點名在別區重複用）
+        u.ctl_id = null; u.delta = null; u.samename = Math.round(best[1]);
+        if (!/^Q/i.test(u.name)) report.push(['info', u.section + ' 用到的「' + u.name + '」在圖根點檔裡只有同名的別的點（' + fmtDist(best[1]) + ' 外），當作圖根點檔裡沒有']);
+      } else if (!best) {
         u.ctl_id = null; u.delta = null;
         if (!/^Q/i.test(u.name)) report.push(['info', u.section + ' 用到的「' + u.name + '」在圖根點檔（.CTL）裡找不到']);
       } else {
@@ -1363,6 +1382,56 @@
       '參考點': res.points.filter(function (p) { return p.kind === '參考點'; }).length, '宗地': (res.parcels || []).filter(function (p) { return p.found; }).length,
       '圖根點': res.used.length, '圖根點不符': bad, '設站': res.links.length };
     return res;
+  }
+
+  // ───────────────────────── 儀器檔：衛星接收儀 CSV、Nikon RAW ─────────────────────────
+  /**
+   * 衛星接收儀 CSV：點名,N,E,高程,編碼
+   *   高程 0、沒有編碼 → 上傳到接收儀的已知點；有高程或編碼 → 實測點（數字點名是細部點）
+   */
+  function parseGnssCsv(text) {
+    var known = [], measured = [];
+    lines(text).forEach(function (l, i) {
+      var t = l.split(/[,\t]/).map(function (v) { return v.trim().replace(/^"|"$/g, ''); });
+      if (t.length < 3 || !t[0] || !isNum(t[1]) || !isNum(t[2])) return;
+      var y = +t[1], x = +t[2], h = isNum(t[3]) ? +t[3] : 0, code = t[4] || '';
+      if (!y || !x) return;
+      if (isX(t[1]) && isY(t[2])) { var a = y; y = x; x = a; }
+      (h === 0 && !code ? known : measured).push({ name: t[0], y: y, x: x, h: h, code: code, line: i + 1 });
+    });
+    return { known: known, measured: measured };
+  }
+  function dmsDeg(sv) { var v = parseFloat(sv); if (!isFinite(v)) return null; var sg = v < 0 ? -1 : 1; v = Math.abs(v); var d = Math.floor(v), m = Math.floor((v - d) * 100 + 1e-9), sec = ((v - d) * 100 - m) * 100; return sg * (d + m / 60 + sec / 3600); }
+  /** TM2（中央經線 121°、k0 0.9999）的尺度比 */
+  function tm2Scale(E) { var R = 6371000; return 0.9999 * (1 + Math.pow(E - 250000, 2) / (2 * R * R)); }
+  /**
+   * Nikon RAW：UP 已知點、ST 測站（測站,,後視,,儀器高,後視方位角）、F1 後視觀測、SS 前視觀測（HA 以後視為 0、天頂角）。
+   * 算出每個前視點坐標，並做後視檢核（觀測水平距 vs 坐標反算）。
+   * opts.grid：true = 距離改算到 TM2 平面（× 尺度比 × R/(R+h)），opts.h：平均高程（公尺）
+   */
+  function parseNikonRaw(text, opts) {
+    opts = opts || {};
+    var R = 6371000, h = opts.h == null ? 50 : opts.h;
+    var known = {}, knownList = [], shots = [], bs = [], st = null;
+    var red = function (hd, E) { return opts.grid === false ? hd : hd * tm2Scale(E) * R / (R + h); };
+    lines(text).forEach(function (l) {
+      var f = l.split(',').map(function (v) { return v.trim(); }), ty = (f[0] || '').toUpperCase();
+      if ((ty === 'UP' || ty === 'MP' || ty === 'CC') && f[1] && isNum(f[3]) && isNum(f[4])) { known[f[1]] = [+f[3], +f[4]]; knownList.push({ name: f[1], y: +f[3], x: +f[4] }); }
+      else if (ty === 'ST') st = { s: f[1], b: f[3] || f[2], az: dmsDeg(f[6]), bh: dmsDeg(f[7]) || 0 };
+      else if ((ty === 'F1' || ty === 'F2') && st && known[st.s] && known[st.b] && isNum(f[3])) {
+        var S = known[st.s], B = known[st.b], va = dmsDeg(f[5]) * Math.PI / 180, hd0 = +f[3] * Math.sin(va);
+        var dc = hypot(B[0] - S[0], B[1] - S[1]);
+        bs.push({ station: st.s, back: st.b, coord: dc, raw: hd0, grid: hd0 * tm2Scale(S[1]) * R / (R + h) });
+      } else if (ty === 'SS' && st && known[st.s] && isNum(f[3])) {
+        var S2 = known[st.s], va2 = dmsDeg(f[5]) * Math.PI / 180, hd = red(+f[3] * Math.sin(va2), S2[1]);
+        var az = st.az != null ? st.az : (known[st.b] ? Math.atan2(known[st.b][1] - S2[1], known[st.b][0] - S2[0]) * 180 / Math.PI : 0);
+        var a = (az + dmsDeg(f[4]) - st.bh) * Math.PI / 180;
+        var P = [S2[0] + hd * Math.cos(a), S2[1] + hd * Math.sin(a)];
+        shots.push({ name: f[1], y: P[0], x: P[1], station: st.s, code: f[7] || '' });
+        if (!known[f[1]]) known[f[1]] = P;   // 先測、後來當測站的點（例如 QT60-2）
+      }
+    });
+    return { known: knownList, shots: shots, backsights: bs };
   }
 
   // ───────────────────────── 第二層：外業檢核點 ─────────────────────────
@@ -1477,6 +1546,7 @@
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
     matchChecks: matchChecks, classifyChecks: classifyChecks, addSupplement: addSupplement,
+    parseGnssCsv: parseGnssCsv, parseNikonRaw: parseNikonRaw, tm2Scale: tm2Scale,
     parseParamInp: parseParamInp, parseCtlFix: parseCtlFix, sectionNums: sectionNums, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED

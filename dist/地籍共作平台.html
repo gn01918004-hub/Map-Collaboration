@@ -2205,7 +2205,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
   function isBoundaryName(n) { return /^\d+(\.\d+)?$/.test(n); }
   function refName(num, ref) { return parseInt(num, 10) + '.' + ('0' + parseInt(ref, 10)).slice(-2); }
 
-  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|zip)$/i;
+  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|raw|zip)$/i;
   function wanted(p) { return WANT.test(p); }
 
   /** 「123, 124-1」「1114 123、1114 124之2」→ [{section: 'KC1114'|null, key: '123'}]；看不懂的放 bad */
@@ -2310,8 +2310,24 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         });
         if (setups.length) report.push(['info', sec + '：' + fileName(f.path) + ' 有 ' + setups.length + ' 次設站']);
       });
+      // 儀器檔：已知點 → 用到的圖根點；實測點 → 檢核點候選（數字點名是細部點，不當檢核點）
+      sd.instr = [];
       (byExt.CSV || []).concat((byExt.TXT || []).filter(function (f) { return !looksLikeB90(decode(f.bytes)); })).forEach(function (f) {
-        parseCsvPoints(decode(f.bytes)).forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'CSV 儀器檔'); });
+        var g = parseGnssCsv(decode(f.bytes));
+        g.known.forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'CSV 儀器檔'); });
+        var named = g.measured.filter(function (p) { return !isBoundaryName(p.name); });
+        if (g.measured.length) report.push(['info', sec + '：' + fileName(f.path) + ' 有實測點 ' + g.measured.length + ' 點' + (named.length ? '（有點名的 ' + named.length + ' 點會拿來當檢核點）' : '（都是細部點號）')]);
+        sd.instr.push({ file: f.path, type: 'GNSS', known: g.known, measured: named });
+      });
+      (byExt.RAW || []).forEach(function (f) {
+        var r = parseNikonRaw(decode(f.bytes), opts.raw);
+        r.known.forEach(function (p) { if (!isBoundaryName(p.name)) use(p.name, p.y, p.x, f.path, 'Nikon RAW 已知點'); });
+        r.backsights.forEach(function (b) {
+          var d0 = (b.raw - b.coord) * 1000, d1 = (b.grid - b.coord) * 1000;
+          report.push([Math.min(Math.abs(d0), Math.abs(d1)) > 20 ? 'warn' : 'info', sec + '：後視檢核 ' + b.station + '→' + b.back + '（' + b.coord.toFixed(1) + ' m）坐標反算跟觀測差：不改正 ' + d0.toFixed(1) + ' mm、改算到平面 ' + d1.toFixed(1) + ' mm']);
+        });
+        var named = r.shots.filter(function (p) { return !isBoundaryName(p.name); });
+        sd.instr.push({ file: f.path, type: 'RAW', known: r.known, measured: named, backsights: r.backsights });
       });
       sd.finish = function () {
         usedOrder = usedOrder.filter(function (k) { return !secPts['補點|' + k]; });
@@ -2359,8 +2375,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     }
     Object.keys(secData).sort().forEach(function (s) { secData[s].finish(); });
     if (!Object.keys(groups).length) report.push(['error', '找不到重測系統的資料（需要 KCxxxx.D20、D14、D13、L02 或 B90 等檔案）']);
-    var bnd = {}; Object.keys(secData).forEach(function (k) { bnd[k] = secData[k].bnd; });
-    return { points: points, links: links, used: used, parcels: parcels, report: report, sections: Object.keys(groups).sort(), bnd: bnd };
+    var bnd = {}, instr = []; Object.keys(secData).forEach(function (k) { bnd[k] = secData[k].bnd; (secData[k].instr || []).forEach(function (x) { x.section = k; instr.push(x); }); });
+    return { points: points, links: links, used: used, parcels: parcels, report: report, sections: Object.keys(groups).sort(), bnd: bnd, instr: instr };
   }
 
   /** 補點清冊：某位測量員全部上傳（不含已刪除）的補點；最大編號連已刪除的也算，號碼不會重複用 */
@@ -2392,7 +2408,10 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       (ctx.ctlByName[u.name.toUpperCase()] || []).forEach(function (p) {
         [[p.y, p.x]].concat(p.raw || []).forEach(function (c) { var d = hypot(c[0] - u.y, c[1] - u.x); if (!best || d < best[1]) best = [p, d]; });
       });
-      if (!best) {
+      if (best && best[1] > 5) {   // 同名但差好幾公尺以上：不是同一點（點名在別區重複用）
+        u.ctl_id = null; u.delta = null; u.samename = Math.round(best[1]);
+        if (!/^Q/i.test(u.name)) report.push(['info', u.section + ' 用到的「' + u.name + '」在圖根點檔裡只有同名的別的點（' + fmtDist(best[1]) + ' 外），當作圖根點檔裡沒有']);
+      } else if (!best) {
         u.ctl_id = null; u.delta = null;
         if (!/^Q/i.test(u.name)) report.push(['info', u.section + ' 用到的「' + u.name + '」在圖根點檔（.CTL）裡找不到']);
       } else {
@@ -2461,6 +2480,56 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       '參考點': res.points.filter(function (p) { return p.kind === '參考點'; }).length, '宗地': (res.parcels || []).filter(function (p) { return p.found; }).length,
       '圖根點': res.used.length, '圖根點不符': bad, '設站': res.links.length };
     return res;
+  }
+
+  // ───────────────────────── 儀器檔：衛星接收儀 CSV、Nikon RAW ─────────────────────────
+  /**
+   * 衛星接收儀 CSV：點名,N,E,高程,編碼
+   *   高程 0、沒有編碼 → 上傳到接收儀的已知點；有高程或編碼 → 實測點（數字點名是細部點）
+   */
+  function parseGnssCsv(text) {
+    var known = [], measured = [];
+    lines(text).forEach(function (l, i) {
+      var t = l.split(/[,\t]/).map(function (v) { return v.trim().replace(/^"|"$/g, ''); });
+      if (t.length < 3 || !t[0] || !isNum(t[1]) || !isNum(t[2])) return;
+      var y = +t[1], x = +t[2], h = isNum(t[3]) ? +t[3] : 0, code = t[4] || '';
+      if (!y || !x) return;
+      if (isX(t[1]) && isY(t[2])) { var a = y; y = x; x = a; }
+      (h === 0 && !code ? known : measured).push({ name: t[0], y: y, x: x, h: h, code: code, line: i + 1 });
+    });
+    return { known: known, measured: measured };
+  }
+  function dmsDeg(sv) { var v = parseFloat(sv); if (!isFinite(v)) return null; var sg = v < 0 ? -1 : 1; v = Math.abs(v); var d = Math.floor(v), m = Math.floor((v - d) * 100 + 1e-9), sec = ((v - d) * 100 - m) * 100; return sg * (d + m / 60 + sec / 3600); }
+  /** TM2（中央經線 121°、k0 0.9999）的尺度比 */
+  function tm2Scale(E) { var R = 6371000; return 0.9999 * (1 + Math.pow(E - 250000, 2) / (2 * R * R)); }
+  /**
+   * Nikon RAW：UP 已知點、ST 測站（測站,,後視,,儀器高,後視方位角）、F1 後視觀測、SS 前視觀測（HA 以後視為 0、天頂角）。
+   * 算出每個前視點坐標，並做後視檢核（觀測水平距 vs 坐標反算）。
+   * opts.grid：true = 距離改算到 TM2 平面（× 尺度比 × R/(R+h)），opts.h：平均高程（公尺）
+   */
+  function parseNikonRaw(text, opts) {
+    opts = opts || {};
+    var R = 6371000, h = opts.h == null ? 50 : opts.h;
+    var known = {}, knownList = [], shots = [], bs = [], st = null;
+    var red = function (hd, E) { return opts.grid === false ? hd : hd * tm2Scale(E) * R / (R + h); };
+    lines(text).forEach(function (l) {
+      var f = l.split(',').map(function (v) { return v.trim(); }), ty = (f[0] || '').toUpperCase();
+      if ((ty === 'UP' || ty === 'MP' || ty === 'CC') && f[1] && isNum(f[3]) && isNum(f[4])) { known[f[1]] = [+f[3], +f[4]]; knownList.push({ name: f[1], y: +f[3], x: +f[4] }); }
+      else if (ty === 'ST') st = { s: f[1], b: f[3] || f[2], az: dmsDeg(f[6]), bh: dmsDeg(f[7]) || 0 };
+      else if ((ty === 'F1' || ty === 'F2') && st && known[st.s] && known[st.b] && isNum(f[3])) {
+        var S = known[st.s], B = known[st.b], va = dmsDeg(f[5]) * Math.PI / 180, hd0 = +f[3] * Math.sin(va);
+        var dc = hypot(B[0] - S[0], B[1] - S[1]);
+        bs.push({ station: st.s, back: st.b, coord: dc, raw: hd0, grid: hd0 * tm2Scale(S[1]) * R / (R + h) });
+      } else if (ty === 'SS' && st && known[st.s] && isNum(f[3])) {
+        var S2 = known[st.s], va2 = dmsDeg(f[5]) * Math.PI / 180, hd = red(+f[3] * Math.sin(va2), S2[1]);
+        var az = st.az != null ? st.az : (known[st.b] ? Math.atan2(known[st.b][1] - S2[1], known[st.b][0] - S2[0]) * 180 / Math.PI : 0);
+        var a = (az + dmsDeg(f[4]) - st.bh) * Math.PI / 180;
+        var P = [S2[0] + hd * Math.cos(a), S2[1] + hd * Math.sin(a)];
+        shots.push({ name: f[1], y: P[0], x: P[1], station: st.s, code: f[7] || '' });
+        if (!known[f[1]]) known[f[1]] = P;   // 先測、後來當測站的點（例如 QT60-2）
+      }
+    });
+    return { known: knownList, shots: shots, backsights: bs };
   }
 
   // ───────────────────────── 第二層：外業檢核點 ─────────────────────────
@@ -2575,6 +2644,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
     matchChecks: matchChecks, classifyChecks: classifyChecks, addSupplement: addSupplement,
+    parseGnssCsv: parseGnssCsv, parseNikonRaw: parseNikonRaw, tm2Scale: tm2Scale,
     parseParamInp: parseParamInp, parseCtlFix: parseCtlFix, sectionNums: sectionNums, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
     SHEET_67: SHEET_67, ABOLISHED: ABOLISHED
@@ -2879,6 +2949,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       chks.forEach(function (c) { c.ll = Core.ll(c.meas[0], c.meas[1]); c.approved = !!ak[c.key]; });
       return { points: pts, used: Object.keys(used).map(function (k) { return used[k]; }), links: links, history: Core.parcelHistory(bs),
         checks: chks, approved: appr, check_tol_cm: S.cfg.check_tol_cm || 3,
+        backsights: [].concat.apply([], bs.map(function (b) { return (b.backsights || []).map(function (x) { return Object.assign({ surveyor: b.surveyor, created: b.created }, x); }); })),
         surveyors: S.cfg.surveyors, case_types: S.cfg.case_types,
         batches: bs.map(function (b) {
           return { id: b.id, surveyor: b.surveyor, note: b.note, created: b.created, sections: (b.sections || []).join(','), stats: b.stats,
@@ -2911,6 +2982,29 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     return loadBatches(true).then(function (bs) { return Core.buildRegistry(bs, name, sv ? sv.code : ''); });
   }
   var CLS = { ok: '在容許差內', area: '附近好幾點都差不多 → 這一區轉換有偏差', single: '只有這點跟旁邊不同 → 點本身的細部差', lone: '附近檢核點不夠，還看不出是哪一種', wrong: '差超過 1 公尺，可能點名對錯' };
+  /** 儀器檔是 67 還是 97：已知點跟圖根點（換算後 97／原始 67）對，對不到就看段 */
+  function frameOf(ins, bnd) {
+    var v97 = 0, v67 = 0;
+    var vote = function (k, tol) {
+      (S.ctlByName[k.name.toUpperCase()] || []).forEach(function (c) {
+        if (Math.hypot(c.y - k.y, c.x - k.x) < tol) v97++;
+        (c.raw || []).forEach(function (r) { if (Math.hypot(r[0] - k.y, r[1] - k.x) < tol) v67++; });
+      });
+    };
+    ins.known.forEach(function (k) { vote(k, 0.02); });
+    ins.measured.forEach(function (k) { vote(k, 0.5); });   // 實測的圖根點：差幾公分，用 0.5 公尺判斷
+    if (v97 || v67) return v97 >= v67 ? 'TWD97' : 'TWD67';
+    // 對不到圖根點（例如都是補點）：看離這次上傳的 D14 界址點（這段系統的坐標）近不近
+    var b = bnd && bnd[ins.section], near = Infinity;
+    if (b) ins.known.concat(ins.measured).slice(0, 50).forEach(function (k) {
+      Object.keys(b).forEach(function (n) { var c = b[n]; var d = Math.hypot(c[0] - k.y, c[1] - k.x); if (d < near) near = d; });
+    });
+    if (near < 300) {
+      var sec = (S.index.sections || []).filter(function (x) { return x.section === ins.section; })[0];
+      return sec && sec.datum === 'TWD67' ? 'TWD67' : 'TWD97';
+    }
+    return 'unknown';
+  }
   function chkTol() { return (S.cfg.check_tol_cm || 3) / 100; }
   /** 全部上傳裡的檢核點；有 67 坐標的用「現在的參數」重算換算值（確認過的修正會讓差變小） */
   function allChecks(bs) {
@@ -2948,21 +3042,41 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         res.blocking = res.report.filter(function (r) { return r[0] === 'error'; }).length + (pl.parcels.length ? 0 : 1);
         if (!body.caseType) { res.report.unshift(['error', '請選案件種類']); res.blocking++; }
         res.code = sv.code;
-        // 實測檢核點（選填）
-        if (body.checkFiles && body.checkFiles.length) {
-          var meas = [];
-          body.checkFiles.forEach(function (f) { meas = meas.concat(Core.parseCsvPoints(Core.decode(f.bytes))); });
-          var mc = Core.matchChecks(meas, { bnd: res.bnd, sections: res.sections, trans: S.trans, ctlByName: S.ctlByName });
+        // 實測檢核點：選填的檢核點檔＋儀器檔裡有點名的實測點（97 坐標的才拿來檢核轉換）
+        var meas = [], src67 = [];
+        (body.checkFiles || []).forEach(function (f) { Core.parseCsvPoints(Core.decode(f.bytes)).forEach(function (p) { p.src = f.path; meas.push(p); }); });
+        res.backsights = [];
+        (res.instr || []).forEach(function (ins) {
+          var fr = frameOf(ins, res.bnd);
+          ins.frame = fr;
+          (ins.backsights || []).forEach(function (b) { res.backsights.push({ section: ins.section, station: b.station, back: b.back, coord: b.coord, raw: b.raw, grid: b.grid, frame: fr, file: Core.fileName(ins.file) }); });
+          if (fr === 'TWD97') ins.measured.forEach(function (p) { meas.push({ name: p.name, y: p.y, x: p.x, src: ins.file }); });
+          else if (fr === 'TWD67') src67.push(ins);
+          else if (ins.measured.length) res.report.push(['warn', Core.fileName(ins.file) + '：看不出是 67 還是 97 坐標（已知點對不到圖根點、也不在這次上傳的段附近），實測點先不拿來檢核']);
+        });
+        // 67 坐標系的儀器檔：只做 67 內部檢核（實測 vs 已知），不拿來修正轉換
+        src67.forEach(function (ins) {
+          var kn = {}; ins.known.forEach(function (k) { kn[k.name.toUpperCase()] = k; });
+          ins.measured.forEach(function (p) {
+            var nm = p.name.toUpperCase(), k = kn[nm] || kn[nm.replace(/-\d+$/, '')];
+            if (k) res.report.push(['info', '67 內部檢核（' + Core.fileName(ins.file) + '）：' + p.name + ' 實測跟已知 ' + k.name + ' 差 ' + Core.fmtDist(Math.hypot(p.y - k.y, p.x - k.x))]);
+          });
+          res.report.push(['info', Core.fileName(ins.file) + ' 是 TWD67 坐標（' + ins.section + '），實測點不拿來檢核 67→97 轉換']);
+        });
+        if (meas.length) {
+          // 點名後面的 -1、-2（同一點重測）對不到時，用原點名再對一次
+          meas.forEach(function (m) { if (!S.ctlByName[m.name.toUpperCase()] && /-\d+$/.test(m.name) && S.ctlByName[m.name.toUpperCase().replace(/-\d+$/, '')]) { m.orig = m.name; m.name = m.name.replace(/-\d+$/, ''); } });
+          var mc = Core.matchChecks(meas, { bnd: (body.checkFiles || []).length ? res.bnd : {}, sections: res.sections, trans: S.trans, ctlByName: S.ctlByName });
           var prev = allChecks(live);
           Core.classifyChecks(prev.concat(mc.checks), { tol: chkTol(), range: S.cfg.check_range_m || 150 });
           res.checks = mc.checks;
-          var cnt = {}; mc.checks.forEach(function (c) { cnt[c.cls] = (cnt[c.cls] || 0) + 1; });
           res.report.push(['ok', '實測檢核點 ' + meas.length + ' 點，對到已知點 ' + mc.checks.length + ' 點' + (mc.unmatched.length ? '（對不到：' + mc.unmatched.slice(0, 8).join('、') + (mc.unmatched.length > 8 ? '…' : '') + '）' : '')]);
           mc.checks.filter(function (c) { return c.cls !== 'ok'; }).forEach(function (c) {
             res.report.push([c.cls === 'wrong' ? 'warn' : 'info', '檢核點 ' + c.name + '（' + c.kind + '）實測跟換算差 ' + Core.fmtDist(c.d) + '：' + CLS[c.cls]]);
           });
           res.stats['檢核點'] = mc.checks.length;
         }
+        delete res.instr;
         delete res.bnd;
         return res;
       });
@@ -2977,7 +3091,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       var rec = { version: 2, surveyor: body.surveyor, code: res.code, caseType: body.caseType, caseNo: body.caseNo || '', note: body.note || '',
         created: created, sections: res.sections, stats: res.stats, report: res.report, maxNum: res.maxNum || 0,
         parcels: res.parcels.map(function (p) { return { section: p.section, parcel: p.parcel, found: p.found, ring: p.ring || null }; }),
-        points: res.points, used: res.used, links: res.links, checks: res.checks || [], files: keep.map(function (f) { return f.path; }).concat((body.checkFiles || []).map(function (f) { return '檢核點/' + f.path; })) };
+        points: res.points, used: res.used, links: res.links, checks: res.checks || [], backsights: res.backsights || [], files: keep.map(function (f) { return f.path; }).concat((body.checkFiles || []).map(function (f) { return '檢核點/' + f.path; })) };
       var p = Promise.resolve();
       keep.forEach(function (f) {
         var parts = f.path.split('/').filter(function (x) { return x && x !== '.' && x !== '..'; });
@@ -3167,7 +3281,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.06-4';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-1';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -3649,7 +3763,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 
   // ── 上傳 ──
   var pending = [];   // [{path, file}]
-  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|zip)$/i;
+  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|raw|zip)$/i;
   function fillUploadForm() {
     var sv = (S.info && S.info.surveyors) || [], cur = $('who').value || store('who') || '';
     $('who').innerHTML = '<option value="">— 選測量員 —</option>' + sv.map(function (x) { return '<option value="' + esc(x.name) + '">' + esc(x.name) + '（補點 Q' + esc(x.code) + '…）</option>'; }).join('');
@@ -3883,11 +3997,22 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       };
     });
   }
+  /** 全站儀後視檢核統計：觀測距離要不要改算到 TM2 平面（尺度比＋高程），看哪一種跟坐標比較合 */
+  function bsSummary() {
+    var b = (S.field && S.field.backsights) || [];
+    if (!b.length) return '';
+    var ppm = function (k) { var v = b.map(function (x) { return (x[k] - x.coord) / x.coord * 1e6; }); var m = v.reduce(function (a, c) { return a + c; }, 0) / v.length; return { mean: m, rms: Math.sqrt(v.reduce(function (a, c) { return a + c * c; }, 0) / v.length) }; };
+    var r = ppm('raw'), g = ppm('grid'), by = function (fr) { return b.filter(function (x) { return x.frame === fr; }).length; };
+    return '<div class="msg info">全站儀後視檢核 ' + b.length + ' 條（67 坐標 ' + by('TWD67') + '、97 坐標 ' + by('TWD97') + '）：觀測距離<b>不改正</b>平均差 ' + r.mean.toFixed(0) + ' ppm（RMS ' + r.rms.toFixed(0) +
+      '）、<b>改算到 TM2 平面</b>平均差 ' + g.mean.toFixed(0) + ' ppm（RMS ' + g.rms.toFixed(0) + '）。1 ppm = 每公里 1 公釐。' +
+      (b.length >= 10 ? '<br>→ ' + (Math.abs(r.mean) < Math.abs(g.mean) ? '目前的坐標比較像<b>沒有改算到平面</b>（地面距離）算出來的' : '目前的坐標符合 TM2 平面距離') : '<br>（累積 10 條以上比較準）') + '</div>';
+  }
   function renderChecks() {
     var all = (S.field && S.field.checks) || [];
-    if (!all.length) { $('chkList').innerHTML = '<div class="small">還沒有檢核點。測量員上傳時在第 3 步加「實測檢核點」就會出現。</div>'; return; }
+    if (!all.length) { $('chkList').innerHTML = bsSummary() + '<div class="small">還沒有檢核點。測量員上傳時，儀器檔（衛星接收儀 CSV、Nikon RAW）裡有點名的實測點會自動當檢核點，也可以在第 3 步另外加檢核點檔。</div>'; return; }
     var cnt = {}; all.forEach(function (c) { cnt[c.cls] = (cnt[c.cls] || 0) + 1; });
     var h = '<div class="small">共 ' + all.length + ' 點：' + Object.keys(CHK_TEXT).filter(function (k) { return cnt[k]; }).map(function (k) { return '<span class="chk-' + k + '">' + CHK_TEXT[k].split('（')[0] + ' ' + cnt[k] + '</span>'; }).join('、') + '</div>';
+    h += bsSummary();
     var cand = all.filter(function (c) { return (c.cls === 'area' || c.cls === 'lone') && !c.approved && c.n67 != null; });
     var appr = all.filter(function (c) { return c.approved; });
     if (cand.length) {

@@ -1,7 +1,7 @@
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.06-4';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-1';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -483,7 +483,7 @@
 
   // ── 上傳 ──
   var pending = [];   // [{path, file}]
-  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|zip)$/i;
+  var WANT = /\.(d13|d14|d20|l02|l14|l20|b9\d|csv|txt|raw|zip)$/i;
   function fillUploadForm() {
     var sv = (S.info && S.info.surveyors) || [], cur = $('who').value || store('who') || '';
     $('who').innerHTML = '<option value="">— 選測量員 —</option>' + sv.map(function (x) { return '<option value="' + esc(x.name) + '">' + esc(x.name) + '（補點 Q' + esc(x.code) + '…）</option>'; }).join('');
@@ -717,11 +717,22 @@
       };
     });
   }
+  /** 全站儀後視檢核統計：觀測距離要不要改算到 TM2 平面（尺度比＋高程），看哪一種跟坐標比較合 */
+  function bsSummary() {
+    var b = (S.field && S.field.backsights) || [];
+    if (!b.length) return '';
+    var ppm = function (k) { var v = b.map(function (x) { return (x[k] - x.coord) / x.coord * 1e6; }); var m = v.reduce(function (a, c) { return a + c; }, 0) / v.length; return { mean: m, rms: Math.sqrt(v.reduce(function (a, c) { return a + c * c; }, 0) / v.length) }; };
+    var r = ppm('raw'), g = ppm('grid'), by = function (fr) { return b.filter(function (x) { return x.frame === fr; }).length; };
+    return '<div class="msg info">全站儀後視檢核 ' + b.length + ' 條（67 坐標 ' + by('TWD67') + '、97 坐標 ' + by('TWD97') + '）：觀測距離<b>不改正</b>平均差 ' + r.mean.toFixed(0) + ' ppm（RMS ' + r.rms.toFixed(0) +
+      '）、<b>改算到 TM2 平面</b>平均差 ' + g.mean.toFixed(0) + ' ppm（RMS ' + g.rms.toFixed(0) + '）。1 ppm = 每公里 1 公釐。' +
+      (b.length >= 10 ? '<br>→ ' + (Math.abs(r.mean) < Math.abs(g.mean) ? '目前的坐標比較像<b>沒有改算到平面</b>（地面距離）算出來的' : '目前的坐標符合 TM2 平面距離') : '<br>（累積 10 條以上比較準）') + '</div>';
+  }
   function renderChecks() {
     var all = (S.field && S.field.checks) || [];
-    if (!all.length) { $('chkList').innerHTML = '<div class="small">還沒有檢核點。測量員上傳時在第 3 步加「實測檢核點」就會出現。</div>'; return; }
+    if (!all.length) { $('chkList').innerHTML = bsSummary() + '<div class="small">還沒有檢核點。測量員上傳時，儀器檔（衛星接收儀 CSV、Nikon RAW）裡有點名的實測點會自動當檢核點，也可以在第 3 步另外加檢核點檔。</div>'; return; }
     var cnt = {}; all.forEach(function (c) { cnt[c.cls] = (cnt[c.cls] || 0) + 1; });
     var h = '<div class="small">共 ' + all.length + ' 點：' + Object.keys(CHK_TEXT).filter(function (k) { return cnt[k]; }).map(function (k) { return '<span class="chk-' + k + '">' + CHK_TEXT[k].split('（')[0] + ' ' + cnt[k] + '</span>'; }).join('、') + '</div>';
+    h += bsSummary();
     var cand = all.filter(function (c) { return (c.cls === 'area' || c.cls === 'lone') && !c.approved && c.n67 != null; });
     var appr = all.filter(function (c) { return c.approved; });
     if (cand.length) {

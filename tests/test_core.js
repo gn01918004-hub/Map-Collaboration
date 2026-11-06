@@ -165,6 +165,19 @@ function dbf(fields, rows) {
     assert.ok(Math.abs(back[0] - q[0]) < 1e-9);
   }
 
+  // 儀器檔
+  {
+    const g = Core.parseGnssCsv('BAC026,2706766.984,218704.317,0.000,\nGAC02,2707247.180,218509.200,52.1,99\n193,0.000,0.000,0.000,\n1,2707976.374,219410.119,50.145,10\n');
+    assert.deepStrictEqual([g.known.map(p => p.name), g.measured.map(p => p.name)], [['BAC026'], ['GAC02', '1']]);
+    const raw = ['UP,A,,2708461.5880,216289.7500,,', 'UP,B,,2708533.3790,216312.0240,,', 'ST,A,,B,,0.0000,17.1414,0.0000',
+      'F1,B,0.0000,75.171,0.0000,90.4723,20:29:01', 'SS,C,0.0000,26.046,264.1919,89.2818,20:32:11,'].join('\n');
+    const r = Core.parseNikonRaw(raw, { h: 50 });
+    assert.strictEqual(r.backsights.length, 1);
+    assert.ok(Math.abs(r.backsights[0].raw - r.backsights[0].coord) < 0.005);
+    assert.ok(Math.abs(r.shots[0].y - 2708466.806) < 0.003 && Math.abs(r.shots[0].x - 216264.236) < 0.003);
+    assert.ok(Math.abs(Core.tm2Scale(216300) - 0.999914) < 1e-6);
+  }
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

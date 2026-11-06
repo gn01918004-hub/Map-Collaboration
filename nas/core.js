@@ -1305,11 +1305,13 @@
    */
   function analyzeUpload(res, ctx) {
     var tol = ctx.tol || 0.02, dupTol = ctx.dupTol || 0.02, report = res.report.slice(), bad = 0, secName = ctx.secName || function (s) { return s; };
+    var vote = {};   // 每段：用到的圖根點對到 97 還是 67 坐標 → 這次上傳的資料是哪個坐標系統
     res.used.forEach(function (u) {
       var best = null;
       (ctx.ctlByName[u.name.toUpperCase()] || []).forEach(function (p) {
-        [[p.y, p.x]].concat(p.raw || []).forEach(function (c) { var d = hypot(c[0] - u.y, c[1] - u.x); if (!best || d < best[1]) best = [p, d]; });
+        [[p.y, p.x, 'TWD97']].concat((p.raw || []).map(function (r) { return [r[0], r[1], 'TWD67']; })).forEach(function (c) { var d = hypot(c[0] - u.y, c[1] - u.x); if (!best || d < best[1]) best = [p, d, c[2]]; });
       });
+      if (best && best[1] < 0.03) { var v = vote[u.section] = vote[u.section] || { TWD97: 0, TWD67: 0 }; v[best[2]]++; }
       if (best && best[1] > 5) {   // 同名但差好幾公尺以上：不是同一點（點名在別區重複用）
         u.ctl_id = null; u.delta = null; u.samename = Math.round(best[1]);
         if (!/^Q/i.test(u.name)) report.push(['info', u.section + ' 用到的「' + u.name + '」在圖根點檔裡只有同名的別的點（' + fmtDist(best[1]) + ' 外），當作圖根點檔裡沒有']);
@@ -1322,6 +1324,18 @@
       }
     });
     var conv = {};
+    // 67 段的資料：用到的圖根點多數對到 97 坐標 → 測量員已經用 97 作業，不要再換一次（不然會差 800 多公尺）
+    res.frames = {};
+    Object.keys(ctx.trans).forEach(function (sec) {
+      var v = vote[sec];
+      if (!v || (!v.TWD97 && !v.TWD67)) { res.frames[sec] = 'TWD67?'; return; }
+      res.frames[sec] = v.TWD97 > v.TWD67 ? 'TWD97' : 'TWD67';
+      if (res.sections.indexOf(sec) >= 0) report.push(['info', sec + ' 上傳的資料是 ' + res.frames[sec] + '（用到的圖根點 ' + (v.TWD97 + v.TWD67) + ' 點，對到 97 坐標 ' + v.TWD97 + ' 點、67 坐標 ' + v.TWD67 + ' 點）' + (res.frames[sec] === 'TWD97' ? '，不用換算' : '')]);
+    });
+    var trans = {};
+    Object.keys(ctx.trans).forEach(function (sec) { if (res.frames[sec] !== 'TWD97') trans[sec] = ctx.trans[sec]; });
+    res.sections.forEach(function (sec) { if (ctx.trans[sec] && res.frames[sec] === 'TWD67?') report.push(['warn', sec + ' 是 TWD67 的段，但這次沒有用到圖根點可以確認資料的坐標系統，先當作 67 換算；如果測量員是用 97 作業，請告訴管理者']); });
+    ctx = Object.assign({}, ctx, { trans: trans });
     var to97 = function (sec, y, x) { var T = ctx.trans[sec]; if (!T || coordStatus(y, x) !== 'ok') return [y, x]; var q = T.apply(y, x); return [r3(q[0]), r3(q[1])]; };
     res.points.concat(res.used).forEach(function (p) {
       if (!ctx.trans[p.section]) return;

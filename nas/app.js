@@ -1,7 +1,7 @@
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.07-1';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-2';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }

@@ -178,6 +178,18 @@ function dbf(fields, rows) {
     assert.ok(Math.abs(Core.tm2Scale(216300) - 0.999914) < 1e-6);
   }
 
+  // 67 段但資料已經是 97：不能再換一次
+  {
+    const T0 = Core.GpsTransform(pp, 'g');
+    const q = T0.apply(2700100, 215700);
+    const ctl = { CTRL1: [{ id: 'CTRL1', name: 'CTRL1', y: q[0], x: q[1], raw: [[2700100, 215700]], datum: 'TWD67' }] };
+    const mk = (y, x) => ({ points: [{ section: 'KC9999', kind: '補點', name: 'Q1', y: y + 10, x: x + 10, src: 'x' }], used: [{ section: 'KC9999', name: 'CTRL1', y: y, x: x, src: 'x', how: 'L02' }], links: [], parcels: [], report: [], sections: ['KC9999'] });
+    const a97 = Core.analyzeUpload(mk(q[0], q[1]), { ctlByName: ctl, trans: { KC9999: T0 }, others: [], surveyor: 'A', tol: 0.02 });
+    assert.strictEqual(a97.frames.KC9999, 'TWD97'); assert.ok(Math.abs(a97.points[0].y - (q[0] + 10)) < 1e-6, '97 資料不換算');
+    const a67 = Core.analyzeUpload(mk(2700100, 215700), { ctlByName: ctl, trans: { KC9999: T0 }, others: [], surveyor: 'A', tol: 0.02 });
+    assert.strictEqual(a67.frames.KC9999, 'TWD67'); assert.ok(Math.abs(a67.points[0].y - (2700110)) > 100, '67 資料要換算');
+  }
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

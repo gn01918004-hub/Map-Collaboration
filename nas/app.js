@@ -1,7 +1,7 @@
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.07-2';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-3';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -627,6 +627,7 @@
     $('tol').value = i.tolerance_cm;
     $('caseTypes').value = (i.case_types || []).join('\n');
     $('dupTol').value = i.dup_tol_cm || 2;
+    $('caseTol').value = i.case_tol_cm || 6; $('caseWarn').value = i.case_warn_cm || 5;
     $('refBuf').value = i.ref_buffer_m || 50;
     renderSurveyors();
     renderParams();
@@ -787,6 +788,59 @@
   $('parPickFile').onclick = function () { $('parFile').click(); };
   $('parDir').onchange = function () { paramUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.webkitRelativePath || f.name, file: f }; })); this.value = ''; };
   $('parFile').onchange = function () { paramUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; })); this.value = ''; };
+  // ── 外業工具 ──
+  $('kitGo').onclick = function () {
+    busy(true, '產生外業包…');
+    api('/api/kit', { parcelsText: $('kitParcels').value, radius: $('kitRadius').value }).then(function (r) {
+      busy(false); $('kitMsg').innerHTML = '已下載 <b>' + esc(r.file) + '</b>：' + Object.keys(r.counts).map(function (k) { return k + ' ' + r.counts[k] + ' 點'; }).join('、');
+    }).catch(function (e) { busy(false); toast(e.message, 8000); });
+  };
+  var wb = { dir: null, files: [] };
+  $('wbDir').onclick = function () {
+    window.showDirectoryPicker({ id: 'resurvey', mode: 'readwrite' }).then(function (d) { wb.dir = d; $('wbDirName').textContent = '📁 ' + d.name; }).catch(function () {});
+  };
+  $('wbPick').onclick = function () { $('wbInput').click(); };
+  $('wbInput').onchange = function () { wb.files = Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; }); this.value = ''; $('wbFiles').textContent = wb.files.map(function (x) { return x.path; }).join('、'); };
+  function fillWbWho() {
+    var sv = (S.info && S.info.surveyors) || [], cur = $('wbWho').value || store('who') || '';
+    $('wbWho').innerHTML = '<option value="">— 選測量員 —</option>' + sv.map(function (x) { return '<option value="' + esc(x.name) + '">' + esc(x.name) + '</option>'; }).join('');
+    if (sv.some(function (x) { return x.name === cur; })) $('wbWho').value = cur;
+  }
+  $('wbCheck').onclick = function () {
+    if (!$('wbWho').value) return toast('請選測量員');
+    if (!wb.dir) return toast('請選重測系統資料夾');
+    if (!wb.files.length) return toast('請選 97 外業成果檔');
+    busy(true, '檢查中…');
+    Local.fileListToItems(wb.files).then(function (items) { return api('/api/writeback/preview', { surveyor: $('wbWho').value, dir: wb.dir, items: items, radius: $('wbRadius').value }); })
+      .then(function (r) { busy(false); renderWb(r); }).catch(function (e) { busy(false); toast(e.message, 8000); });
+  };
+  function renderWb(r) {
+    var cm = function (v) { return v == null ? '' : (v * 100).toFixed(1) + ' cm'; }, tol = (S.info.case_tol_cm || 6) / 100, warn = (S.info.case_warn_cm || 5) / 100;
+    var order = { error: 0, warn: 1, ok: 2, info: 3 };
+    var h = '<div class="small">' + esc(secName(r.section)) + '（' + r.datum + '）：寫進 D14 參考點 <b>' + r.toD14 + '</b> 點、D20 補點 <b>' + r.toD20 + '</b> 點</div>';
+    h += r.report.slice().sort(function (a, b) { return order[a[0]] - order[b[0]]; }).map(function (m) { return '<div class="msg ' + m[0] + '">' + esc(m[1]) + '</div>'; }).join('');
+    if (r.checks.length) {
+      h += '<label>重測到的舊點（實測換回 ' + r.frame + ' 跟已知比）</label><div class="reg"><table class="wbt"><tr><th>點</th><th>種類</th><th>修正前</th><th>修正後</th><th>用來修正</th></tr>' + r.checks.map(function (c) {
+        var lv = function (v) { return v > tol ? 'bad' : v > warn ? 'warn' : 'okc'; };
+        return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.kind) + '</td><td class="' + lv(c.before) + '">' + cm(c.before) + '</td><td class="' + lv(c.after) + '">' + cm(c.after) + '</td><td>' + (c.used ? '✔' : (c.near ? '✘ 差太多' : '太遠')) + '</td></tr>';
+      }).join('') + '</table></div>';
+    }
+    var ST = { new: '新增', renumbered: '自動改號', edited: '手動指定', needCode: '缺編碼', conflict: '衝突', skip: '無法寫入', excluded: '不寫入', noFile: '缺檔案', near: '重測（不寫入）', remeasure: '重測→新參考點' };
+    h += '<label>要寫入的點</label><div class="reg"><table class="wbt"><tr><th>原名</th><th>寫成</th><th>檔</th><th>' + r.frame + ' 坐標</th><th>狀態</th></tr>' + r.rows.map(function (x) {
+      return '<tr><td>' + esc(x.orig) + '</td><td><b>' + esc(x.out || '') + '</b></td><td>' + esc(x.target || '') + '</td><td>' + f3(x.y) + ', ' + f3(x.x) + '</td><td title="' + esc(x.reason || '') + '">' + esc(ST[x.status] || x.status) + (x.reason ? ' ⓘ' : '') + '</td></tr>';
+    }).join('') + '</table></div>';
+    h += r.blocking ? '<div class="msg error">有 ' + r.blocking + ' 個問題要先處理（缺編碼、衝突或 67 坐標的檔案），還不能寫入</div>' :
+      '<div class="row"><button id="wbWrite" class="go">✍ 寫入重測系統（原檔先備份 .bak）</button></div>';
+    $('wbOut').innerHTML = h;
+    if ($('wbWrite')) $('wbWrite').onclick = function () {
+      if (!confirm('寫進 ' + r.section + ' 的 D14／D20？原檔會先備份。')) return;
+      busy(true, '寫入中…');
+      api('/api/writeback/commit', {}).then(function (x) {
+        busy(false); toast('已寫入：D14 ' + x.d14 + ' 點、D20 ' + x.d20 + ' 點（原檔備份 .' + x.backup + '.bak），寫入對照表已下載', 8000);
+        $('wbOut').innerHTML = ''; wb.files = []; $('wbFiles').textContent = ''; return loadField();
+      }).catch(function (e) { busy(false); toast(e.message, 8000); });
+    };
+  }
   function renderSurveyors() {
     var sv = (S.info && S.info.surveyors) || [];
     $('svList').innerHTML = sv.length ? sv.map(function (x, i) {
@@ -849,7 +903,8 @@
     busy(true, '儲存中…');
     var cts = $('caseTypes').value.split(/\n/).map(function (x) { return x.trim(); }).filter(Boolean);
     api('/api/config', { tolerance_cm: parseFloat($('tol').value) || 2, section_names: names, case_types: cts.length ? cts : ['保存登記', '鑑界', '分割'],
-      dup_tol_cm: parseFloat($('dupTol').value) || 2, ref_buffer_m: parseFloat($('refBuf').value) || 50 })
+      dup_tol_cm: parseFloat($('dupTol').value) || 2, ref_buffer_m: parseFloat($('refBuf').value) || 50,
+      case_tol_cm: parseFloat($('caseTol').value) || 6, case_warn_cm: parseFloat($('caseWarn').value) || 5 })
       .then(function () { busy(false); toast('已儲存'); return loadInfo().then(renderAdmin); })
       .catch(function (e) { busy(false); toast(e.message); });
   };
@@ -920,7 +975,7 @@
 
   // ───────────────────────── 載入 ─────────────────────────
   function loadInfo() {
-    return api('/api/info').then(function (i) { S.info = i; drawSectionBoxes(); fillUploadForm(); });
+    return api('/api/info').then(function (i) { S.info = i; drawSectionBoxes(); fillUploadForm(); fillWbWho(); });
   }
   function loadField() {
     return api('/api/field').then(function (d) {

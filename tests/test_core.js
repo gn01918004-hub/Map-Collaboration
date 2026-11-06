@@ -190,6 +190,30 @@ function dbf(fields, rows) {
     assert.strictEqual(a67.frames.KC9999, 'TWD67'); assert.ok(Math.abs(a67.points[0].y - (2700110)) > 100, '67 資料要換算');
   }
 
+  // 回寫重測系統：反算回 67、案件局部修正、規劃 D14／D20
+  {
+    const T0 = Core.GpsTransform(pp, 'g');
+    const back = T0.inverse(...T0.apply(2700123.456, 215678.9));
+    assert.ok(Math.hypot(back[0] - 2700123.456, back[1] - 215678.9) < 1e-4, '來回誤差要很小');
+    // 真實世界：這一區轉換有 4 cm 偏差（實測 97 = 參數換算 + 4 cm 北）
+    const off = [0.04, -0.01], coa = {}, truth67 = {};
+    [[1, 0, 0], [2, 40, 10], [3, 15, 60], [4, -30, 35]].forEach(([n, dy, dx]) => { const y67 = 2700300 + dy, x67 = 215800 + dx, q = T0.apply(y67, x67); coa[String(n)] = [q[0], q[1], y67, x67]; truth67[n] = [y67, x67]; });
+    const meas = Object.keys(coa).map(n => ({ name: n, code: '', y: coa[n][0] + off[0], x: coa[n][1] + off[1], src: 'gnss.csv' }));
+    const newT = T0.apply(2700310, 215820);   // 新參考點、新補點的真 67 位置
+    meas.push({ name: '501', code: '11', y: newT[0] + off[0], x: newT[1] + off[1], src: 'gnss.csv' });
+    meas.push({ name: 'Q9', code: '', y: newT[0] + 5 + off[0], x: newT[1] + off[1], src: 'gnss.csv' });
+    const d14 = Core.parseDbfRaw(dbf([['COT_NUMBER', 'N', 5], ['COT_REF', 'N', 2], ['COT_Y', 'N', 16], ['COT_X', 'N', 15]], [{ COT_NUMBER: 1, COT_REF: 0, COT_Y: '2700300.00000000', COT_X: '215800.00000000' }]));
+    const d20 = Core.parseDbfRaw(dbf([['CTL_NAME', 'C', 8], ['CTL_Y', 'N', 12], ['CTL_X', 'N', 11], ['CTL_LEVEL', 'C', 3]], [{ CTL_NAME: 'QW1', CTL_Y: '2700000.000', CTL_X: '215000.000', CTL_LEVEL: 'Q' }]));
+    const r = Core.planWriteBack({ section: 'KC9999', T: T0, measured: meas, coa, ctlByName: {}, d14, d20, registry: { points: [], maxNum: 57 }, svCode: 'W', tol: 0.06, warn: 0.05, radius: 200 });
+    assert.strictEqual(r.checks.length, 4);
+    assert.ok(r.checks.every(c => c.before > 0.03 && c.after < 0.002), '局部修正要把 4 cm 偏差修掉');
+    const ref = r.plan.toD14[0], sup = r.plan.toD20[0];
+    assert.strictEqual(ref.out, '501.11'); assert.strictEqual(sup.name, 'QW58');
+    assert.ok(Math.hypot(ref.y - 2700310, ref.x - 215820) < 0.003, '新參考點回到正確的 67 位置');
+    const files = Core.buildDbfFiles(r.plan, d14, d20, Date.UTC(2026, 10, 7));
+    assert.strictEqual(Core.parseDbfRaw(files.d14).nrec, 2); assert.strictEqual(Core.parseDbfRaw(files.d20).nrec, 2);
+  }
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

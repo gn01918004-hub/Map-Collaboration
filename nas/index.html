@@ -13,6 +13,7 @@
     <button class="big up" data-panel="upload">📤 上傳外業資料</button>
     <button class="big find" data-panel="search">🔍 查詢</button>
     <button class="big list" data-panel="recent">🕘 誰上傳了什麼</button>
+    <button class="big tools" data-panel="tools">🧰 外業工具</button>
     <button class="small" data-panel="admin" title="管理">⚙</button>
   </nav>
 </header>
@@ -107,6 +108,42 @@
       <div id="batches"></div>
     </section>
 
+    <!-- 外業工具 -->
+    <section id="p-tools" class="panel">
+      <h2>🧰 外業工具</h2>
+      <div class="card">
+        <h3>① 出發前：下載 97 外業包</h3>
+        <p class="small">填地號，下載一份 CSV（點名,N,E,高程,編碼，跟衛星接收儀的格式一樣），全部是 <b>TWD97</b>：宗地界址點、附近的圖根點和補點。67 段已經換好。</p>
+        <label>地號</label>
+        <textarea id="kitParcels" rows="2" placeholder="例如：123、124-1（不同段：0370 123、1102 45）"></textarea>
+        <div class="row"><label style="margin:0">附近多遠的圖根點、補點</label>
+          <select id="kitRadius" style="width:120px"><option value="100">100 公尺</option><option value="200" selected>200 公尺</option><option value="300">300 公尺</option><option value="500">500 公尺</option></select>
+          <button id="kitGo" class="go">⬇ 下載外業包</button></div>
+        <div id="kitMsg" class="small"></div>
+      </div>
+      <div class="card">
+        <h3>② 回來：97 成果寫回重測系統</h3>
+        <p class="small">把 97 的外業成果（衛星接收儀 CSV、Nikon RAW）寫進這段重測系統的 D20（補點）、D14（參考點）。67 段會用同一組參數換回 67，
+        再用這次<b>重測到的舊點</b>（舊界址點、圖根點）做案件局部修正，讓新點跟旁邊的舊資料接得上。寫入前會先把原檔備份成 .bak。</p>
+        <label>測量員</label>
+        <select id="wbWho"></select>
+        <div class="row"><button id="wbDir" class="pick">選重測系統資料夾（例如 KC0370）</button><span id="wbDirName" class="small"></span></div>
+        <div class="row"><button id="wbPick" class="pick">選 97 外業成果檔</button><span id="wbFiles" class="small"></span>
+          <input type="file" id="wbInput" accept=".csv,.txt,.raw,.zip" multiple hidden></div>
+        <div class="row"><label style="margin:0">拿多遠內的舊點做局部修正</label>
+          <select id="wbRadius" style="width:120px"><option value="100">100 公尺</option><option value="200" selected>200 公尺</option><option value="300">300 公尺</option></select>
+          <button id="wbCheck" class="go">檢查</button></div>
+        <div id="wbOut"></div>
+      </div>
+      <details class="help"><summary>規則</summary>
+        <ul>
+          <li>Q 開頭 → D20 補點（照你的補點清冊編號，坐標 2 公分內算同一點）；數字點號＋編碼 → D14 參考點（同資料轉換系統）。</li>
+          <li>數字點號對到這段界址點、點名對到圖根點的，是「重測到的舊點」，不寫入，拿來做局部修正和檢查。</li>
+          <li>局部修正：1～2 點只平移；3 點以上用四參數；修正後還超過容許差的點不拿來修正（那是點本身的問題）。</li>
+          <li>容許差 6 公分、提醒門檻 5 公分，在 ⚙ 管理 → 設定 可以改。</li>
+        </ul></details>
+    </section>
+
     <!-- 管理 -->
     <section id="p-admin" class="panel">
       <h2>⚙ 管理</h2>
@@ -172,6 +209,8 @@
         <input id="tol" type="number" step="0.5" min="0.5">
         <label>案件種類（一行一個）</label>
         <textarea id="caseTypes" rows="3"></textarea>
+        <label>回寫重測系統：容許差／提醒門檻（公分）</label>
+        <div class="row"><input id="caseTol" type="number" step="0.5" style="width:100px"> <input id="caseWarn" type="number" step="0.5" style="width:100px"></div>
         <label>補點坐標差多少以內算「同一點」（公分）</label>
         <input id="dupTol" type="number" step="0.5" min="0.1">
         <label>參考點：取宗地界址點多少公尺內的（公尺）</label>

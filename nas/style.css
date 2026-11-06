@@ -171,3 +171,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
 .chkbox { background: #f9fafb; border: 1px dashed var(--line); border-radius: 10px; padding: 8px 10px; margin: 8px 0; font-size: 14px; }
 .sym.arrow { color: #7a3fd1; font-weight: bold; text-align: center; line-height: 16px; }
 .chk-ok { color: #13834a; } .chk-area { color: #7a3fd1; } .chk-single { color: #e8730c; } .chk-lone { color: #667085; } .chk-wrong { color: #d92d20; }
+
+#top .tools { background: #b54708; }
+.wbt td.bad { color: #d92d20; font-weight: bold; } .wbt td.warn { color: #b54708; font-weight: bold; } .wbt td.okc { color: #13834a; }

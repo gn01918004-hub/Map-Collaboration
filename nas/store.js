@@ -135,7 +135,8 @@
     return readJson('設定.json').catch(function () { return {}; }).then(function (c) {
       S.cfg = Object.assign({ tolerance_cm: 2.0, section_names: {}, twd67_sections: null, abolished_sections: Core.ABOLISHED.slice(),
         surveyors: [], case_types: ['保存登記', '鑑界', '分割'], dup_tol_cm: 2.0, ref_buffer_m: 50,
-        param_exclude: {}, param_choice: {}, param_exclude_names: [], check_tol_cm: 3.0, check_range_m: 150 }, c);
+        param_exclude: {}, param_choice: {}, param_exclude_names: [], check_tol_cm: 3.0, check_range_m: 150,
+        case_tol_cm: 6, case_warn_cm: 5, case_radius_m: 200 }, c);
       // 115.11.06 決定：HL129 不用、0360 用自己的 1140730（只套一次，之後管理頁可以改）
       if (!S.cfg.defaults_v2) {
         S.cfg.defaults_v2 = true;
@@ -184,6 +185,7 @@
         .then(function () { return writeJson(v + 'ctl_entries.json', r.ctlEntries); })
         .then(function () { return writeJson(v + 'parcels.json', r.parcelIndex); });
       Object.keys(r.sections).forEach(function (s) { p = p.then(function () { return writeJson(v + 'sections/' + s + '.json', r.sections[s]); }); });
+      Object.keys(r.coa || {}).forEach(function (s) { p = p.then(function () { return writeJson(v + 'coa/' + s + '.json', r.coa[s]); }); });
       return p.then(function () { return writeJson('底圖/目前.json', { version: ver, built: Date.now() }); })
         .then(function () { return cleanupVersions(ver); })
         .then(function () { S.version = null; return loadBase(); })
@@ -321,6 +323,146 @@
     }).then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true }; });
   }
   function stamp(d) { var p = function (n) { return (n < 10 ? '0' : '') + n; }; return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); }
+  // ── 外業包（97 CSV）：宗地界址點、附近圖根點、附近補點 ──
+  function readCoa(sec) {
+    return readJson(vpath('coa/' + sec + '.json')).catch(function () { throw new Error('底圖是舊版，請到 ⚙ 管理按一次「重新整理」再用'); });
+  }
+  function fieldKit(body) {
+    var pl = Core.parseParcelList(body.parcelsText), R = +body.radius || 200;
+    if (!pl.parcels.length) return Promise.reject(new Error('請填地號'));
+    return parcelsIndex().then(function (idx) {
+      var want = [];
+      pl.parcels.forEach(function (w) {
+        var hit = idx.filter(function (r) { return r[1] === w.key && (!w.section || r[0] === w.section); });
+        var secs = hit.map(function (r) { return r[0]; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+        if (!secs.length) throw new Error(w.key + ' 地號找不到');
+        if (secs.length > 1) throw new Error(w.key + ' 地號好幾段都有（' + secs.map(secName).join('、') + '），請寫成「段號 地號」，例如 ' + secs[0].slice(2) + ' ' + w.key);
+        want.push({ section: secs[0], key: w.key });
+      });
+      var secs = want.map(function (w) { return w.section; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+      return Promise.all(secs.map(function (sec) { return Promise.all([readJson(vpath('sections/' + sec + '.json')), readCoa(sec)]); })).then(function (arr) {
+        var rows = [], seen = {}, pts = [];
+        var add = function (name, y, x, kind) { var k = name.toUpperCase(); if (seen[k]) return; seen[k] = 1; rows.push({ name: name, y: y, x: x, kind: kind }); };
+        secs.forEach(function (sec, i) {
+          var parcels = arr[i][0].parcels, coa = arr[i][1];
+          want.filter(function (w) { return w.section === sec; }).forEach(function (w) {
+            var pc = parcels.filter(function (p) { return p.k === w.key; })[0];
+            if (!pc || !pc.n) throw new Error('底圖是舊版，請到 ⚙ 管理按一次「重新整理」再用');
+            pc.n.forEach(function (id) { var c = coa[id]; if (c) { pts.push([c[0], c[1]]); add(id, c[0], c[1], '界址點'); } });
+          });
+        });
+        var near = function (y, x) { return pts.some(function (q) { return Math.hypot(q[0] - y, q[1] - x) <= R; }); };
+        var head = [];
+        S.controls.forEach(function (c) { if (c.status === 'ok' && c.datum !== '?' && near(c.y, c.x)) head.push({ name: c.name, y: c.y, x: c.x, kind: '圖根點' }); });
+        return fieldData().then(function (fd) {
+          fd.points.filter(function (p) { return p.kind === '補點' && near(p.y, p.x); }).forEach(function (p) { head.push({ name: p.name, y: p.y, x: p.x, kind: '補點' }); });
+          var all = head.concat(rows), out = [], seen2 = {};
+          all.forEach(function (r) { var k = r.name.toUpperCase(); if (seen2[k]) return; seen2[k] = 1; out.push(r.name + ',' + r.y.toFixed(3) + ',' + r.x.toFixed(3) + ',0.000,'); });
+          var fn = '外業包_' + secs.map(function (x) { return x.slice(2); }).join('_') + '_' + want.map(function (w) { return w.key; }).slice(0, 5).join('_') + '.csv';
+          download(fn, out.join('\r\n') + '\r\n', 'text/csv');
+          var cnt = {}; all.forEach(function (r) { cnt[r.kind] = (cnt[r.kind] || 0) + 1; });
+          return { ok: true, file: fn, counts: cnt };
+        });
+      });
+    });
+  }
+
+  // ── 回寫重測系統：97 外業成果 → 這段坐標（67 段反算）→ 案件局部修正 → D14／D20 ──
+  var WB = {};   // 預覽時的狀態（寫入時要確認檔案沒被別人改過）
+  function readSysFolder(dir) {
+    var files = {}, it = dir.values();
+    function next() {
+      return it.next().then(function (r) {
+        if (r.done) return files;
+        var h = r.value, e = Core.extName(h.name);
+        if (h.kind === 'file' && (e === 'D14' || e === 'D20') && Core.baseName(h.name).toUpperCase() !== 'KC0000') {
+          return h.getFile().then(function (f) { return f.arrayBuffer(); }).then(function (b) { (files[e] = files[e] || []).push({ name: h.name, handle: h, bytes: new Uint8Array(b) }); return next(); });
+        }
+        return next();
+      });
+    }
+    return next();
+  }
+  function writeBackPreview(body) {
+    var sv = surveyorOf(body.surveyor);
+    if (!sv) return Promise.reject(new Error('請先選測量員'));
+    if (!body.dir) return Promise.reject(new Error('請先選重測系統的資料夾（裡面要有 KCxxxx.D14、D20）'));
+    return readSysFolder(body.dir).then(function (sys) {
+      var d14f = (sys.D14 || [])[0], d20f = (sys.D20 || [])[0];
+      if (!d14f && !d20f) throw new Error('這個資料夾裡找不到 D14 或 D20，請選某一段的資料夾（例如 KC0370）');
+      var sec = Core.sectionOf((d14f || d20f).name);
+      var info = (S.index.sections || []).filter(function (x) { return x.section === sec; })[0];
+      if (!info) throw new Error('底圖裡沒有 ' + sec);
+      var T = info.datum === 'TWD67' ? S.trans[sec] : null;
+      return Promise.all([Core.expandZips(body.items), readCoa(sec), loadBatches(true)]).then(function (a) {
+        var files = a[0], coa = a[1], all = a[2], meas = [], report = [];
+        files.forEach(function (f) {
+          var e = Core.extName(f.path), known = [], m = [];
+          if (e === 'RAW') { var r = Core.parseNikonRaw(Core.decode(f.bytes), { h: 50 }); known = r.known; m = r.shots; }
+          else if (e === 'CSV' || e === 'TXT') { var g = Core.parseGnssCsv(Core.decode(f.bytes)); known = g.known; m = g.measured; }
+          else return;
+          var fr = frameOf({ known: known, measured: m.filter(function (p) { return !/^\d+$/.test(p.name); }), section: sec }, {});
+          if (fr === 'unknown' && T) {   // 再用這段的界址點號比：對到 97 還是 67 坐標
+            var v7 = 0, v9 = 0;
+            known.concat(m).forEach(function (p) { var c = /^\d+$/.test(p.name) && coa[String(+p.name)]; if (!c) return; if (Math.hypot(c[0] - p.y, c[1] - p.x) < 1) v9++; if (Math.hypot(c[2] - p.y, c[3] - p.x) < 1) v7++; });
+            if (v7 > v9) fr = 'TWD67'; else if (v9) fr = 'TWD97';
+          }
+          if (fr === 'unknown' && T) report.push(['warn', Core.fileName(f.path) + '：看不出是 67 還是 97，先當作 97；如果是 67 坐標的檔案，結果會差 800 多公尺，請確認']);
+          if (fr === 'TWD67') { report.push(['error', Core.fileName(f.path) + ' 是 67 坐標的檔案；回寫要用 97 的外業成果']); return; }
+          m.forEach(function (p) { meas.push({ name: p.name, code: p.code, y: p.y, x: p.x, src: f.path }); });
+          report.push(['info', Core.fileName(f.path) + '：實測 ' + m.length + ' 點']);
+        });
+        if (!meas.length) throw new Error('沒有讀到 97 的實測點（衛星接收儀 CSV 或 Nikon RAW）');
+        var res = Core.planWriteBack({ section: sec, T: T, measured: meas, coa: coa, ctlByName: S.ctlByName,
+          d14: d14f ? Core.parseDbfRaw(d14f.bytes) : null, d20: d20f ? Core.parseDbfRaw(d20f.bytes) : null,
+          registry: Core.buildRegistry(all, sv.name, sv.code), svCode: sv.code, dupTol: (S.cfg.dup_tol_cm || 2) / 100,
+          tol: (S.cfg.case_tol_cm || 6) / 100, warn: (S.cfg.case_warn_cm || 5) / 100, radius: +body.radius || S.cfg.case_radius_m || 200 });
+        res.report = report.concat(res.report);
+        if (T) res.report.unshift(['info', secName(sec) + ' 是 67 段：97 成果用同一組參數反算回 67（' + T.describe() + '）']);
+        res.section = sec; res.datum = info.datum; res.files = { d14: d14f && d14f.name, d20: d20f && d20f.name };
+        WB = { sv: sv, sec: sec, res: res, d14f: d14f, d20f: d20f, items: body.items, dir: body.dir };
+        return { section: sec, datum: info.datum, report: res.report, checks: res.checks, fit: res.fit, frame: res.frame,
+          rows: res.plan.rows.map(function (r) { return { kind: r.kind, orig: r.orig_name, out: r.out, target: r.target, y: r.y, x: r.x, y97: r.y97, x97: r.x97, status: r.status, reason: r.reason, reg: r.reg }; }),
+          toD14: res.plan.toD14.length, toD20: res.plan.toD20.length, blocking: res.plan.blocking.length + res.report.filter(function (x) { return x[0] === 'error'; }).length };
+      });
+    });
+  }
+  function writeBackCommit(body) {
+    if (!WB.res) return Promise.reject(new Error('請先按「檢查」'));
+    var res = WB.res, built = Core.buildDbfFiles(res.plan, WB.d14f ? Core.parseDbfRaw(WB.d14f.bytes) : null, WB.d20f ? Core.parseDbfRaw(WB.d20f.bytes) : null);
+    var jobs = [];
+    if (built.d14) jobs.push({ f: WB.d14f, data: built.d14 });
+    if (built.d20) jobs.push({ f: WB.d20f, data: built.d20 });
+    if (!jobs.length) return Promise.reject(new Error('沒有要寫入的點'));
+    var st = stamp(new Date());
+    // 確認檔案沒被改過 → 原檔備份成 .bak → 寫入
+    return jobs.reduce(function (p, j) {
+      return p.then(function () { return j.f.handle.getFile(); }).then(function (f) { return f.arrayBuffer(); }).then(function (b) {
+        var cur = new Uint8Array(b);
+        if (cur.length !== j.f.bytes.length || cur.some(function (v, i) { return v !== j.f.bytes[i]; })) throw new Error(j.f.name + ' 在檢查之後被改過了，請重新按「檢查」');
+        return WB.dir.getFileHandle(j.f.name + '.' + st + '.bak', { create: true });
+      }).then(function (bh) { return bh.createWritable().then(function (w) { return w.write(j.f.bytes).then(function () { return w.close(); }); }); })
+        .then(function () { return j.f.handle.createWritable(); }).then(function (w) { return w.write(j.data).then(function () { return w.close(); }); });
+    }, Promise.resolve()).then(function () {
+      // 平台留紀錄：補點進清冊（97 坐標）、參考點、檢核結果、用的參數版本
+      var created = Date.now() / 1000, id = st + '_' + WB.sv.name.replace(/[\\/:*?"<>|]/g, '_') + '_回寫';
+      var written = res.plan.toD14.concat(res.plan.toD20);
+      var rec = { version: 2, writeback: true, surveyor: WB.sv.name, code: WB.sv.code, caseType: '回寫重測系統', caseNo: body.caseNo || '', note: body.note || '',
+        created: created, sections: [WB.sec], maxNum: res.maxNum, parcels: [], used: [], links: [],
+        points: written.map(function (r) { return { section: WB.sec, kind: r.kind, name: r.target === 'D20' ? r.out : r.out, y: r.y97, x: r.x97, sys: [r.y, r.x], src: r.src, reg: r.reg, orig_name: r.orig_name }; }),
+        stats: { '補點': res.plan.toD20.length, '新補點': res.plan.toD20.filter(function (r) { return r.reg === 'new'; }).length, '參考點': res.plan.toD14.length, '重測舊點': res.checks.length },
+        report: res.report, fit: res.fit, checks: [], wbChecks: res.checks.map(function (c) { return { name: c.name, kind: c.kind, before: c.before, after: c.after, used: c.used }; }),
+        paramVersion: S.version, transform: res.datum === 'TWD67' ? (S.index.sections.filter(function (x) { return x.section === WB.sec; })[0] || {}).transform : '', files: [] };
+      var p = writeJson('上傳/' + id + '/結果.json', rec);
+      p = p.then(function () { return write('上傳/' + id + '/寫入對照表.csv', built.table); });
+      (WB.items || []).forEach(function (f) { p = p.then(function () { return write('上傳/' + id + '/原始檔/' + f.path.split('/').filter(Boolean).join('/'), f.bytes); }); });
+      return p.then(function () {
+        rec.id = id; S.batches[id] = rec; var out = { ok: true, d14: built.d14 ? res.plan.toD14.length : 0, d20: built.d20 ? res.plan.toD20.length : 0, backup: st };
+        download('寫入對照表_' + WB.sec + '_' + st + '.csv', built.table, 'text/csv');
+        WB = {}; return out;
+      });
+    });
+  }
   function surveyorOf(name) { return (S.cfg.surveyors || []).filter(function (x) { return x.name === name; })[0]; }
   function registryOf(name) {
     var sv = surveyorOf(name);
@@ -521,7 +663,8 @@
           dup_tol_cm: S.cfg.dup_tol_cm, ref_buffer_m: S.cfg.ref_buffer_m, section_names: S.names, custom_names: S.cfg.section_names,
           abolished: S.cfg.abolished_sections, sections: idx.sections, ctl: idx.ctl, built: idx.built,
           ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {},
-          param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3 };
+          param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3,
+          case_tol_cm: S.cfg.case_tol_cm, case_warn_cm: S.cfg.case_warn_cm, case_radius_m: S.cfg.case_radius_m };
       });
     }
     if (path === '/api/controls') return Promise.resolve(S.controls);
@@ -568,6 +711,7 @@
         if ('dup_tol_cm' in body) S.cfg.dup_tol_cm = body.dup_tol_cm;
         if ('ref_buffer_m' in body) S.cfg.ref_buffer_m = body.ref_buffer_m;
         if ('check_tol_cm' in body) S.cfg.check_tol_cm = body.check_tol_cm;
+        ['case_tol_cm', 'case_warn_cm', 'case_radius_m'].forEach(function (k) { if (k in body) S.cfg[k] = body[k]; });
         if (Array.isArray(body.param_exclude_names)) { S.cfg.param_exclude_names = body.param_exclude_names; rebuild = true; }
         if (body.param_choice) { S.cfg.param_choice = Object.assign(S.cfg.param_choice || {}, body.param_choice); Object.keys(S.cfg.param_choice).forEach(function (k) { if (!S.cfg.param_choice[k]) delete S.cfg.param_choice[k]; }); rebuild = true; }
         if (body.param_exclude) { S.cfg.param_exclude = Object.assign(S.cfg.param_exclude || {}, body.param_exclude); rebuild = true; }
@@ -592,6 +736,9 @@
       return saveSource(body.items).then(function () { return rebuildFrom(body.items, body.progress); }).then(function (idx) { return { ok: true, sections: idx.sections.length }; });
     }
     if (path === '/api/base/rebuild') return rebuildFromSaved(body && body.progress).then(function () { return { ok: true }; });
+    if (path === '/api/kit') return loadCfg().then(function () { return fieldKit(body); });
+    if (path === '/api/writeback/preview') return loadCfg().then(function () { return writeBackPreview(body); });
+    if (path === '/api/writeback/commit') return writeBackCommit(body);
     if (path === '/api/checks/approve') return loadCfg().then(function () { return setApproved(body); });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
     if (path === '/api/params/delete') {

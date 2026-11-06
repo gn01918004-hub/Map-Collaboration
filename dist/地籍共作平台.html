@@ -841,6 +841,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
 .sym.arrow { color: #7a3fd1; font-weight: bold; text-align: center; line-height: 16px; }
 .chk-ok { color: #13834a; } .chk-area { color: #7a3fd1; } .chk-single { color: #e8730c; } .chk-lone { color: #667085; } .chk-wrong { color: #d92d20; }
 
+#top .tools { background: #b54708; }
+.wbt td.bad { color: #d92d20; font-weight: bold; } .wbt td.warn { color: #b54708; font-weight: bold; } .wbt td.okc { color: #13834a; }
+
 </style>
 </head>
 <body>
@@ -850,6 +853,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
     <button class="big up" data-panel="upload">📤 上傳外業資料</button>
     <button class="big find" data-panel="search">🔍 查詢</button>
     <button class="big list" data-panel="recent">🕘 誰上傳了什麼</button>
+    <button class="big tools" data-panel="tools">🧰 外業工具</button>
     <button class="small" data-panel="admin" title="管理">⚙</button>
   </nav>
 </header>
@@ -944,6 +948,42 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
       <div id="batches"></div>
     </section>
 
+    <!-- 外業工具 -->
+    <section id="p-tools" class="panel">
+      <h2>🧰 外業工具</h2>
+      <div class="card">
+        <h3>① 出發前：下載 97 外業包</h3>
+        <p class="small">填地號，下載一份 CSV（點名,N,E,高程,編碼，跟衛星接收儀的格式一樣），全部是 <b>TWD97</b>：宗地界址點、附近的圖根點和補點。67 段已經換好。</p>
+        <label>地號</label>
+        <textarea id="kitParcels" rows="2" placeholder="例如：123、124-1（不同段：0370 123、1102 45）"></textarea>
+        <div class="row"><label style="margin:0">附近多遠的圖根點、補點</label>
+          <select id="kitRadius" style="width:120px"><option value="100">100 公尺</option><option value="200" selected>200 公尺</option><option value="300">300 公尺</option><option value="500">500 公尺</option></select>
+          <button id="kitGo" class="go">⬇ 下載外業包</button></div>
+        <div id="kitMsg" class="small"></div>
+      </div>
+      <div class="card">
+        <h3>② 回來：97 成果寫回重測系統</h3>
+        <p class="small">把 97 的外業成果（衛星接收儀 CSV、Nikon RAW）寫進這段重測系統的 D20（補點）、D14（參考點）。67 段會用同一組參數換回 67，
+        再用這次<b>重測到的舊點</b>（舊界址點、圖根點）做案件局部修正，讓新點跟旁邊的舊資料接得上。寫入前會先把原檔備份成 .bak。</p>
+        <label>測量員</label>
+        <select id="wbWho"></select>
+        <div class="row"><button id="wbDir" class="pick">選重測系統資料夾（例如 KC0370）</button><span id="wbDirName" class="small"></span></div>
+        <div class="row"><button id="wbPick" class="pick">選 97 外業成果檔</button><span id="wbFiles" class="small"></span>
+          <input type="file" id="wbInput" accept=".csv,.txt,.raw,.zip" multiple hidden></div>
+        <div class="row"><label style="margin:0">拿多遠內的舊點做局部修正</label>
+          <select id="wbRadius" style="width:120px"><option value="100">100 公尺</option><option value="200" selected>200 公尺</option><option value="300">300 公尺</option></select>
+          <button id="wbCheck" class="go">檢查</button></div>
+        <div id="wbOut"></div>
+      </div>
+      <details class="help"><summary>規則</summary>
+        <ul>
+          <li>Q 開頭 → D20 補點（照你的補點清冊編號，坐標 2 公分內算同一點）；數字點號＋編碼 → D14 參考點（同資料轉換系統）。</li>
+          <li>數字點號對到這段界址點、點名對到圖根點的，是「重測到的舊點」，不寫入，拿來做局部修正和檢查。</li>
+          <li>局部修正：1～2 點只平移；3 點以上用四參數；修正後還超過容許差的點不拿來修正（那是點本身的問題）。</li>
+          <li>容許差 6 公分、提醒門檻 5 公分，在 ⚙ 管理 → 設定 可以改。</li>
+        </ul></details>
+    </section>
+
     <!-- 管理 -->
     <section id="p-admin" class="panel">
       <h2>⚙ 管理</h2>
@@ -1009,6 +1049,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
         <input id="tol" type="number" step="0.5" min="0.5">
         <label>案件種類（一行一個）</label>
         <textarea id="caseTypes" rows="3"></textarea>
+        <label>回寫重測系統：容許差／提醒門檻（公分）</label>
+        <div class="row"><input id="caseTol" type="number" step="0.5" style="width:100px"> <input id="caseWarn" type="number" step="0.5" style="width:100px"></div>
         <label>補點坐標差多少以內算「同一點」（公分）</label>
         <input id="dupTol" type="number" step="0.5" min="0.1">
         <label>參考點：取宗地界址點多少公尺內的（公尺）</label>
@@ -1628,6 +1670,16 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     if (an && ae) T.supp = { a: a, pts: pts, an: an, ae: ae, n: n };
     return T;
   }
+  /** 97 → 67：同一組參數反算（疊代，來回誤差 < 0.1 mm） */
+  Transform.prototype.inverse = function (y, x) {
+    var g = this.py ? [y - this.py[0], x - this.px[0]] : [y + 205.3, x - 829.1];
+    for (var i = 0; i < 20; i++) {
+      var q = this.apply(g[0], g[1]), dy = y - q[0], dx = x - q[1];
+      g = [g[0] + dy, g[1] + dx];
+      if (Math.abs(dy) < 1e-6 && Math.abs(dx) < 1e-6) break;
+    }
+    return g;
+  };
   var baseDescribe = Transform.prototype.describe;
   Transform.prototype.describe = function () {
     var sup = this.supp ? '，加外業檢核點 ' + this.supp.n + ' 點修正' : '';
@@ -1915,11 +1967,20 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
             var sy = 0, sx = 0; for (var i = 0; i < ring.length; i += 2) { sy += ring[i]; sx += ring[i + 1]; }
             center = [Math.round(sy / (ring.length / 2) * 1e7) / 1e7, Math.round(sx / (ring.length / 2) * 1e7) / 1e7];
           }
-          parcels.push({ k: key, a: info.area == null ? null : info.area, u: info.use || '', c: center, r: ring });
+          parcels.push({ k: key, a: info.area == null ? null : info.area, u: info.use || '', c: center, r: ring,
+            n: bnp.map[key].filter(function (pid) { return coa[pid] && coordStatus(coa[pid][0], coa[pid][1]) === 'ok'; }) });
           parcelIndex.push([sec, key, center[0], center[1], info.area == null ? null : info.area]);
         });
         if (!parcels.length) coa97[sec].forEach(ext);
         out.sections[sec] = { section: sec, parcels: parcels };
+        // 界址點坐標（給外業包、寫回用）：{點號: [97Y, 97X]（67 段再加 [67Y, 67X]）}
+        var cp = {};
+        Object.keys(coa).forEach(function (k) {
+          var c = coa[k], r = coaRaw[sec][k];
+          if (coordStatus(c[0], c[1]) !== 'ok') return;
+          cp[k] = T ? [r3(c[0]), r3(c[1]), r[0], r[1]] : [r[0], r[1]];
+        });
+        out.coa = out.coa || {}; out.coa[sec] = cp;
         var src = [];
         if (sheet[sec]) src.push('段名表紅字');
         if (auto[sec]) src.push('自動偵測');
@@ -2546,6 +2607,372 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     return { known: knownList, shots: shots, backsights: bs };
   }
 
+
+  // ───────────────────────── 寫回重測系統（D14／D20） ─────────────────────────
+  // 以下 toU8、parseDbfRaw、encodeField、appendDbf、d14Index、d20Index、nextFreeName、planDbfWrite、buildDbfFiles
+  // 照搬自「土地重測資料轉換系統」，寫入規則跟它完全一樣：
+  //   Q 開頭 → D20 補點；數字點號＋編碼 → D14 參考點；6 公分內的同點視為重測、預設不寫；原檔另存 .bak
+  function pad2(n, w) { var t = String(n); while (t.length < w) t = '0' + t; return t; }
+  function toU8(b) {
+    if (b instanceof Uint8Array) return b;
+    if (b instanceof ArrayBuffer) return new Uint8Array(b);
+    return new Uint8Array(b);
+  }
+  function bytesToStr(u8, a, n) {
+    var s = '';
+    for (var i = a; i < a + n; i++) s += String.fromCharCode(u8[i]);
+    return s;
+  }
+
+  function parseDbfRaw(bytes) {
+    var u8 = toU8(bytes);
+    if (u8.length < 33 || (u8[0] & 0x07) !== 3) throw new Error('不是 dBASE III 檔');
+    var nrec = u8[4] | (u8[5] << 8) | (u8[6] << 16) | (u8[7] << 24);
+    var hlen = u8[8] | (u8[9] << 8), rlen = u8[10] | (u8[11] << 8);
+    var fields = [], off = 32, pos = 1;
+    while (off < hlen - 1 && u8[off] !== 0x0D) {
+      var name = bytesToStr(u8, off, 11).replace(/\0.*$/, '');
+      var f = { name: name, type: String.fromCharCode(u8[off + 11]), len: u8[off + 16], dec: u8[off + 17], pos: pos };
+      fields.push(f); pos += f.len; off += 32;
+    }
+    var records = [];
+    for (var i = 0; i < nrec; i++) {
+      var base = hlen + i * rlen;
+      if (base + rlen > u8.length) break;
+      var rec = { deleted: u8[base] === 0x2A, values: {} };
+      fields.forEach(function (fd) { rec.values[fd.name] = bytesToStr(u8, base + fd.pos, fd.len); });
+      records.push(rec);
+    }
+    var dataEnd = hlen + nrec * rlen;
+    return { u8: u8, nrec: nrec, hlen: hlen, rlen: rlen, fields: fields, records: records,
+      hasEof: u8.length > dataEnd && u8[dataEnd] === 0x1A };
+  }
+
+  function encodeField(fd, v) {
+    var s;
+    if (fd.type === 'N' || fd.type === 'F') {
+      if (v === '' || v == null) s = '';
+      else s = typeof v === 'number' ? (fd.dec ? v.toFixed(fd.dec) : String(Math.round(v))) : String(v);
+      if (s.length > fd.len) throw new Error('欄位 ' + fd.name + ' 放不下「' + s + '」（最多 ' + fd.len + ' 字）');
+      while (s.length < fd.len) s = ' ' + s;
+      return s;
+    }
+    if (fd.type === 'L') return v ? 'T' : 'F';
+    s = String(v == null ? '' : v);
+    if (s.length > fd.len) throw new Error('欄位 ' + fd.name + ' 放不下「' + s + '」（最多 ' + fd.len + ' 字）');
+    while (s.length < fd.len) s += ' ';
+    return s;
+  }
+
+  /** 在原檔後面加上新紀錄，回傳新檔的 Uint8Array（更新筆數與日期，其餘位元組原封不動） */
+  function appendDbf(db, rows, now) {
+    var d = now ? new Date(now) : new Date();
+    var n = rows.length;
+    var dataEnd = db.hlen + db.nrec * db.rlen;
+    var out = new Uint8Array(dataEnd + n * db.rlen + (db.hasEof ? 1 : 0));
+    out.set(db.u8.subarray(0, dataEnd), 0);
+    out[1] = d.getFullYear() - 1900; out[2] = d.getMonth() + 1; out[3] = d.getDate();
+    var total = db.nrec + n;
+    out[4] = total & 255; out[5] = (total >> 8) & 255; out[6] = (total >> 16) & 255; out[7] = (total >> 24) & 255;
+    // 沒指定的欄位沿用最後一筆的內容（例如 D20 的 \0 與 T），沒有舊紀錄時用空白
+    var tmpl = db.nrec ? db.u8.subarray(dataEnd - db.rlen, dataEnd) : null;
+    rows.forEach(function (row, i) {
+      var base = dataEnd + i * db.rlen;
+      if (tmpl) out.set(tmpl, base); else for (var k = 0; k < db.rlen; k++) out[base + k] = 0x20;
+      out[base] = 0x20;
+      db.fields.forEach(function (fd) {
+        if (!tmpl && fd.type === 'L') out[base + fd.pos] = 0x54;
+        if (!Object.prototype.hasOwnProperty.call(row, fd.name)) return;
+        var str = encodeField(fd, row[fd.name]);
+        for (var k = 0; k < fd.len; k++) out[base + fd.pos + k] = str.charCodeAt(k) & 255;
+      });
+    });
+    if (db.hasEof) out[out.length - 1] = 0x1A;
+    return out;
+  }
+
+  /**
+   * D14 已有的參考點（編碼不是 00 的，X.XX）：點號 → 紀錄；以及參考點目前最大點號。
+   * 編碼 00 的是計算求得的界址點（X.00），不算在內。
+   */
+  function d14Index(db) {
+    var refByNum = {}, maxRef = 0, keys = {};
+    (db ? db.records : []).forEach(function (r) {
+      if (r.deleted) return;
+      var num = parseInt(r.values.COT_NUMBER, 10), ref = parseInt(r.values.COT_REF, 10) || 0;
+      if (!isFinite(num)) return;
+      keys[num + '.' + ref] = 1;
+      if (ref === 0) return;
+      (refByNum[num] = refByNum[num] || []).push({ ref: ref, y: parseFloat(r.values.COT_Y), x: parseFloat(r.values.COT_X) });
+      if (num > maxRef) maxRef = num;
+    });
+    return { refByNum: refByNum, maxRef: maxRef, keys: keys };
+  }
+  function d20Index(db) {
+    var names = {};
+    (db ? db.records : []).forEach(function (r) {
+      if (!r.deleted) names[r.values.CTL_NAME.trim().toUpperCase()] = { y: parseFloat(r.values.CTL_Y), x: parseFloat(r.values.CTL_X) };
+    });
+    return names;
+  }
+
+  function nextFreeName(name, used) {
+    var m = /^(.*?)(\d+)$/.exec(name);
+    var cand, i;
+    if (m) {
+      for (i = parseInt(m[2], 10) + 1; ; i++) { cand = m[1] + i; if (!used[cand.toUpperCase()]) return cand; }
+    }
+    for (i = 1; ; i++) { cand = name + '-' + i; if (!used[cand.toUpperCase()]) return cand; }
+  }
+
+  var NEAR_M = 0.06; // 6 公分內視為同一點重測
+
+  /**
+   * 規劃要寫進 D14／D20 的點：
+   *   點名 Q 開頭 → D20 補點；數字點號 → D14 參考點（點號＋編碼）；其他 → 不能寫入
+   *   參考點點號已被用過（D14 任何 X.XX 參考點，或這批資料）→ 改成參考點最大號＋1
+   *   同點號／同補點名稱且坐標相差 6 公分內 → 視為重測，預設不寫入並列出差值；
+   *     使用者勾選寫入時，改成參考點（最大號＋1，編碼預設 11）寫進 D14
+   * points：[{ key, name, code, y, x, src, line }]
+   * edits：{ key: { num, ref, name, skip, write } }
+   */
+  function planDbfWrite(input) {
+    var d14 = input.d14, d20 = input.d20, edits = input.edits || {};
+    var badTo = String(input.badCodeTo || '11');
+    var idx14 = d14Index(d14), idx20 = d20Index(d20);
+    var usedNum = {}, used20 = {}, maxRef = idx14.maxRef;
+    Object.keys(idx14.refByNum).forEach(function (n) { usedNum[n] = 1; });
+    Object.keys(idx20).forEach(function (k) { used20[k] = 1; });
+    var rows = [];
+    var cm = function (d) { return d < 1 ? (d * 100).toFixed(1) + ' cm' : d < 1000 ? d.toFixed(1) + ' m' : (d / 1000).toFixed(1) + ' km'; };
+    var nextNum = function () { maxRef += 1; while (usedNum[maxRef]) maxRef++; return maxRef; };
+    var take = function (row, num, ref) {
+      row.target = 'D14'; row.num = num; row.ref = ref;
+      usedNum[num] = 1; if (num > maxRef) maxRef = num;
+      row.out = num + '.' + pad2(ref, 2);
+    };
+
+    (input.points || []).forEach(function (p) {
+      var e = edits[p.key] || {};
+      var row = { key: p.key, origName: p.name, origCode: p.code == null ? '' : p.code, y: Number(p.y), x: Number(p.x), src: p.src, line: p.line, file: p.file,
+        status: '', reason: '' };
+      var name = String(p.name).trim();
+      if (/^q/i.test(name)) row.target = 'D20';
+      else if (/^\d+$/.test(name)) row.target = 'D14';
+      else { row.target = null; row.status = 'skip'; row.reason = '點名不是數字也不是 Q 開頭，無法寫入'; rows.push(row); return; }
+      if (e.skip) { row.status = 'excluded'; row.reason = '不寫入'; rows.push(row); return; }
+
+      // 6 公分內的重測點
+      var near = null;
+      if (row.target === 'D20' && idx20[name.toUpperCase()]) {
+        var q = idx20[name.toUpperCase()];
+        near = { d: Math.hypot(q.y - row.y, q.x - row.x), what: 'D20 已有補點 ' + name };
+      } else if (row.target === 'D14' && idx14.refByNum[parseInt(name, 10)]) {
+        idx14.refByNum[parseInt(name, 10)].forEach(function (c) {
+          var d = Math.hypot(c.y - row.y, c.x - row.x);
+          if (!near || d < near.d) near = { d: d, what: 'D14 已有參考點 ' + parseInt(name, 10) + '.' + pad2(c.ref, 2) };
+        });
+      }
+      if (near) row.dist = near.d;
+      if (near && near.d <= NEAR_M) {
+        row.near = true;
+        if (!e.write) {
+          row.status = 'near';
+          row.reason = near.what + '，相差 ' + cm(near.d) + '（6 cm 內，視為同一點重測，預設不寫入；要寫入請打勾）';
+          rows.push(row); return;
+        }
+        if (!d14) { row.status = 'noFile'; row.reason = '要寫成參考點，但沒有放入 .D14'; rows.push(row); return; }
+        var wref = e.ref != null && e.ref !== '' ? parseInt(e.ref, 10) : (row.target === 'D14' && p.code ? parseInt(p.code, 10) : parseInt(badTo, 10));
+        if (!(wref >= 1 && wref <= 99)) { row.target = 'D14'; row.status = 'needCode'; row.reason = '請填編碼（01～99）'; rows.push(row); return; }
+        var wn = e.num != null && e.num !== '' ? parseInt(e.num, 10) : null;
+        if (wn != null && usedNum[wn]) { row.target = 'D14'; row.num = wn; row.ref = wref; row.status = 'conflict'; row.reason = '你指定的點號 ' + wn + ' 已經有參考點了'; rows.push(row); return; }
+        take(row, wn != null ? wn : nextNum(), wref);
+        row.status = 'remeasure';
+        row.reason = near.what + '（差 ' + cm(near.d) + '），依你的選擇寫成新的參考點 ' + row.out;
+        rows.push(row); return;
+      }
+
+      if (row.target === 'D14' && !d14) { row.status = 'noFile'; row.reason = '沒有放入 .D14'; rows.push(row); return; }
+      if (row.target === 'D20' && !d20) { row.status = 'noFile'; row.reason = '沒有放入 .D20'; rows.push(row); return; }
+
+      if (row.target === 'D14') {
+        var num = e.num != null && e.num !== '' ? parseInt(e.num, 10) : parseInt(name, 10);
+        var refRaw = e.ref != null && e.ref !== '' ? e.ref : p.code;
+        var ref = refRaw === '' || refRaw == null ? null : parseInt(refRaw, 10);
+        row.num = num; row.ref = ref;
+        if (ref === null || !isFinite(ref) || ref < 0 || ref > 99) { row.status = 'needCode'; row.reason = '缺編碼（00～99），請填'; rows.push(row); return; }
+        if (!(num >= 1 && num <= 99999)) { row.status = 'conflict'; row.reason = '點號要是 1～99999'; rows.push(row); return; }
+        if (usedNum[num]) {
+          if (e.num != null && e.num !== '') { row.status = 'conflict'; row.reason = '你指定的點號 ' + num + ' 已經有參考點了'; rows.push(row); return; }
+          var from = num;
+          take(row, nextNum(), ref);
+          row.status = 'renumbered';
+          row.reason = (idx14.refByNum[from] ? 'D14 已有參考點 ' + from + '.xx' + (near ? '（相差 ' + cm(near.d) + '，不是同一點）' : '') : '這批資料裡重複 ' + from) +
+            '，改成參考點最大號＋1：' + row.out;
+        } else {
+          take(row, num, ref);
+          row.status = e.num != null && e.num !== '' ? 'edited' : 'new';
+        }
+      } else {
+        var nm = e.name ? String(e.name).trim() : name;
+        if (nm.length > 8) { row.status = 'conflict'; row.reason = '補點名稱最多 8 個字'; row.name = nm; rows.push(row); return; }
+        if (used20[nm.toUpperCase()]) {
+          if (e.name) { row.status = 'conflict'; row.reason = '你指定的 ' + nm + ' 已經有了'; row.name = nm; rows.push(row); return; }
+          var nn2 = nextFreeName(nm, used20);
+          if (nn2.length > 8) { row.status = 'conflict'; row.reason = nm + ' 已存在，自動改號後超過 8 個字，請手動指定'; row.name = nm; rows.push(row); return; }
+          row.reason = (idx20[nm.toUpperCase()] ? 'D20 已有 ' + nm + (near ? '（相差 ' + cm(near.d) + '，不是同一點）' : '') : '這批資料裡重複 ' + nm) + '，自動改成 ' + nn2;
+          row.status = 'renumbered'; nm = nn2;
+        } else row.status = e.name ? 'edited' : 'new';
+        used20[nm.toUpperCase()] = 1;
+        row.name = nm; row.out = nm;
+      }
+      rows.push(row);
+    });
+
+    var ok = rows.filter(function (r) { return r.status === 'new' || r.status === 'renumbered' || r.status === 'edited' || r.status === 'remeasure'; });
+    var blocking = rows.filter(function (r) { return r.status === 'needCode' || r.status === 'conflict'; });
+    return {
+      rows: rows,
+      toD14: ok.filter(function (r) { return r.target === 'D14'; }),
+      toD20: ok.filter(function (r) { return r.target === 'D20'; }),
+      blocking: blocking,
+      near: rows.filter(function (r) { return r.status === 'near'; }).length,
+      renumbered: rows.filter(function (r) { return r.status === 'renumbered'; }).length
+    };
+  }
+
+  /** 依規劃產生新的 D14／D20 位元組與對照表 */
+  function buildDbfFiles(plan, d14, d20, now) {
+    var out = {};
+    if (d14 && plan.toD14.length) {
+      out.d14 = appendDbf(d14, plan.toD14.map(function (r) {
+        return { COT_NUMBER: r.num, COT_REF: r.ref, COT_Y: Number(r.y), COT_X: Number(r.x), COT_MATTER: 0, COT_SOURCE: 2,
+          COT_SURVEY: 0, COT_MSE: 0, COT_REMARK: '', TAU_ID: '' };
+      }), now);
+    }
+    if (d20 && plan.toD20.length) {
+      out.d20 = appendDbf(d20, plan.toD20.map(function (r) {
+        return { CTL_NAME: r.name, CTL_Y: Number(r.y), CTL_X: Number(r.x), CTL_LEVEL: 'Q' };
+      }), now);
+    }
+    var STATUS = { new: '新增', renumbered: '自動改號', edited: '手動指定', needCode: '缺編碼', conflict: '衝突', skip: '無法寫入', excluded: '不寫入', noFile: '缺檔案',
+      near: '重測（未寫入）', remeasure: '重測→新參考點' };
+    var cell = function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var lines = [['原點名', '原編碼', '寫入檔案', '寫入點號', 'Y', 'X', '與已有點相差(cm)', '來源', '狀態', '說明'].join(',')];
+    plan.rows.forEach(function (r) {
+      lines.push([r.origName, r.origCode, r.target && r.out ? '.' + r.target : '', r.out || '', Number(r.y).toFixed(3), Number(r.x).toFixed(3),
+        r.dist != null ? (r.dist * 100).toFixed(1) : '', r.src, STATUS[r.status] || r.status, r.reason].map(cell).join(','));
+    });
+    out.table = '\uFEFF' + lines.join('\r\n');
+    return out;
+  }
+
+
+  /**
+   * 案件局部修正：這件案子附近重測到的舊 67 點（已知 67 ↔ 實測 97 反算回 67），
+   * 1～2 點 → 只平移；3 點以上 → 四參數（平移、旋轉、尺度）。讓新測的點跟周圍舊 67 資料接得上。
+   * pairs：[{ name, from:[y,x]（反算的 67）, to:[y,x]（已知 67） }]
+   */
+  function localFit(pairs) {
+    var n = pairs.length;
+    if (!n) return { type: 'none', n: 0, apply: function (y, x) { return [y, x]; }, residuals: [] };
+    var my = 0, mx = 0, ty = 0, tx = 0;
+    pairs.forEach(function (p) { my += p.from[0]; mx += p.from[1]; ty += p.to[0]; tx += p.to[1]; });
+    my /= n; mx /= n; ty /= n; tx /= n;
+    var a = 1, b = 0;
+    if (n >= 3) {
+      var sxx = 0, sab = 0, sba = 0;
+      pairs.forEach(function (p) {
+        var u = p.from[0] - my, v = p.from[1] - mx, U = p.to[0] - ty, V = p.to[1] - tx;
+        sxx += u * u + v * v; sab += u * U + v * V; sba += u * V - v * U;
+      });
+      if (sxx > 0) { a = sab / sxx; b = sba / sxx; }
+    }
+    var f = function (y, x) { var u = y - my, v = x - mx; return [ty + a * u - b * v, tx + b * u + a * v]; };
+    var res = pairs.map(function (p) { var q = f(p.from[0], p.from[1]); return { name: p.name, before: hypot(p.to[0] - p.from[0], p.to[1] - p.from[1]), after: hypot(p.to[0] - q[0], p.to[1] - q[1]) }; });
+    var rms = Math.sqrt(res.reduce(function (s2, r) { return s2 + r.after * r.after; }, 0) / n);
+    return { type: n >= 3 ? 'helmert' : 'shift', n: n, apply: f, residuals: res, rms: rms, shift: [ty - my, tx - mx],
+      scalePpm: (Math.sqrt(a * a + b * b) - 1) * 1e6, rotSec: Math.atan2(b, a) * 206264.8 };
+  }
+
+  /**
+   * 回寫重測系統：97 外業成果 → 這段的坐標系統（67 段反算回 67）→ 案件局部修正 → 規劃寫進 D14／D20。
+   * o：{ section, T（67 段的轉換，97 段給 null）, measured:[{name, code, y, x, src}]（97）, coa:{點號:[97Y,97X,67Y,67X]},
+   *      ctlByName, d14, d20（parseDbfRaw 的結果）, registry:{points,maxNum}, svCode, dupTol, tol, warn, radius }
+   */
+  function planWriteBack(o) {
+    var report = [], tol = o.tol || 0.06, warn = o.warn || 0.05, R = o.radius || 200, is67 = !!o.T;
+    var toSys = function (y, x) { return is67 ? o.T.inverse(y, x) : [y, x]; };
+    var newPts = [], checks = [], skipped = [];
+    o.measured.forEach(function (m) {
+      var nm = String(m.name).trim();
+      // 重測到的舊點：數字點號對到這段界址點、或點名對到圖根點（實測 97 跟換算 97 差 0.5 m 內）
+      if (/^\d+$/.test(nm) && o.coa[String(+nm)]) {
+        var c = o.coa[String(+nm)];
+        if (hypot(c[0] - m.y, c[1] - m.x) < 0.5) { checks.push({ name: nm, kind: '界址點', meas: [m.y, m.x], known: is67 ? [c[2], c[3]] : [c[0], c[1]], src: m.src }); return; }
+      }
+      if (!/^\d+$/.test(nm) && !/^Q/i.test(nm)) {
+        var best = null;
+        (o.ctlByName[nm.toUpperCase()] || []).forEach(function (c) { var d = hypot(c.y - m.y, c.x - m.x); if (!best || d < best.d) best = { c: c, d: d }; });
+        if (best && best.d < 0.5) {
+          var c2 = best.c, kn = is67 ? (c2.datum === 'TWD67' && c2.raw && c2.raw[0]) : [c2.y, c2.x];
+          if (kn) { checks.push({ name: nm, kind: '圖根點', meas: [m.y, m.x], known: kn, src: m.src }); return; }
+        }
+        skipped.push(nm); return;
+      }
+      if (/^Q/i.test(nm)) { newPts.push({ kind: '補點', name: nm, code: '', y97: m.y, x97: m.x, src: m.src }); return; }
+      newPts.push({ kind: '參考點', name: nm, code: m.code == null ? '' : String(m.code).trim(), y97: m.y, x97: m.x, src: m.src });
+    });
+    if (skipped.length) report.push(['info', '不寫入、也不是已知點：' + skipped.slice(0, 10).join('、') + (skipped.length > 10 ? '…' : '')]);
+    // 補點：照補點清冊編號（97 坐標比，同一點不重複）
+    var reg = (o.registry && o.registry.points) || [], next = (o.registry && o.registry.maxNum) || 0, assigned = [];
+    newPts.filter(function (p) { return p.kind === '補點'; }).forEach(function (p) {
+      p.orig_name = p.name;
+      if (!o.svCode) return;
+      var hit = null; reg.concat(assigned).forEach(function (r) { var d = hypot(r.y - p.y97, r.x - p.x97); if (d <= (o.dupTol || 0.02) && (!hit || d < hit.d)) hit = { r: r, d: d }; });
+      if (hit) { p.name = hit.r.name; p.reg = 'existing'; }
+      else { next++; p.name = 'Q' + o.svCode + next; p.reg = 'new'; assigned.push({ name: p.name, y: p.y97, x: p.x97 }); }
+      report.push(['info', '補點 ' + p.orig_name + (p.reg === 'new' ? ' → 新編 ' : ' → 清冊已有 ') + p.name]);
+    });
+    // 換到這段的坐標系統
+    newPts.forEach(function (p) { var q = toSys(p.y97, p.x97); p.y0 = q[0]; p.x0 = q[1]; });
+    checks.forEach(function (c) { c.from = toSys(c.meas[0], c.meas[1]); });
+    // 案件局部修正：用這件案子附近 R 公尺內重測到的舊點
+    var cy = 0, cx = 0; newPts.forEach(function (p) { cy += p.y0; cx += p.x0; });
+    if (newPts.length) { cy /= newPts.length; cx /= newPts.length; }
+    var nearChk = checks.filter(function (c) { return !newPts.length || newPts.some(function (p) { return hypot(c.from[0] - p.y0, c.from[1] - p.x0) <= R; }); });
+    var used = nearChk.slice(), fit = localFit(used.map(function (c) { return { name: c.name, from: c.from, to: c.known }; }));
+    // 單點差太大（超過容許差）的不拿來修正（那是點本身的問題），剩 1 點以上就重算
+    for (var it = 0; it < 5 && fit.n >= 3; it++) {
+      var worst = fit.residuals.slice().sort(function (a, b) { return b.after - a.after; })[0];
+      if (worst.after <= tol) break;
+      used = used.filter(function (c) { return c.name !== worst.name; });
+      fit = localFit(used.map(function (c) { return { name: c.name, from: c.from, to: c.known }; }));
+    }
+    checks.forEach(function (c) {
+      c.before = hypot(c.known[0] - c.from[0], c.known[1] - c.from[1]);
+      var q = fit.apply(c.from[0], c.from[1]); c.after = hypot(c.known[0] - q[0], c.known[1] - q[1]);
+      c.used = used.indexOf(c) >= 0; c.near = nearChk.indexOf(c) >= 0;
+      c.level = c.after > tol ? 'bad' : c.after > warn ? 'warn' : 'ok';
+    });
+    var lbl = is67 ? '67' : '97';
+    if (!checks.length) report.push(['warn', '這次沒有重測到附近的舊點，沒辦法做案件局部修正；建議外業在宗地附近多測 3 點以上舊界址點或圖根點']);
+    else if (fit.type === 'none') report.push(['warn', '重測到的舊點都離這次的新點超過 ' + R + ' 公尺，沒有做局部修正']);
+    else report.push(['ok', '案件局部修正：用 ' + fit.n + ' 個重測舊點（' + (fit.type === 'helmert' ? '四參數' : '平移') + '），修正量 ' + fmtDist(hypot(fit.shift[0], fit.shift[1])) +
+      (fit.type === 'helmert' ? '、尺度 ' + fit.scalePpm.toFixed(0) + ' ppm、旋轉 ' + fit.rotSec.toFixed(1) + '″' : '') + '，修正後殘差 RMS ' + fmtDist(fit.rms)]);
+    checks.forEach(function (c) {
+      if (c.level !== 'ok') report.push([c.level === 'bad' ? 'error' : 'warn', c.kind + ' ' + c.name + '：實測換回 ' + lbl + ' 跟已知差 ' + fmtDist(c.before) + '，修正後 ' + fmtDist(c.after) +
+        (c.level === 'bad' ? '（超過容許差' + (c.used ? '' : '，沒拿來修正') + '）' : '（超過提醒門檻）')]);
+    });
+    if (fit.n < 3 && checks.length) report.push(['warn', '重測舊點少於 3 點，只做平移，沒辦法檢查旋轉、尺度']);
+    newPts.forEach(function (p) { var q = fit.apply(p.y0, p.x0); p.y = r3(q[0]); p.x = r3(q[1]); });
+    // 規劃寫入（規則同資料轉換系統）
+    var plan = planDbfWrite({ d14: o.d14, d20: o.d20, points: newPts.map(function (p, i) { return { key: 'p' + i, name: p.name, code: p.code, y: p.y, x: p.x, src: fileName(p.src || '') }; }) });
+    plan.rows.forEach(function (r, i) { r.kind = newPts[i].kind; r.y97 = newPts[i].y97; r.x97 = newPts[i].x97; r.orig_name = newPts[i].orig_name || newPts[i].name; r.reg = newPts[i].reg; });
+    return { report: report, plan: plan, checks: checks, fit: { type: fit.type, n: fit.n, rms: fit.rms, shift: fit.shift, scalePpm: fit.scalePpm, rotSec: fit.rotSec },
+      newPts: newPts, maxNum: next, frame: lbl };
+  }
+
   // ───────────────────────── 第二層：外業檢核點 ─────────────────────────
   /**
    * 實測檢核點（TWD97，點名,Y,X）對應到已知的 67 點：
@@ -2658,6 +3085,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     parseDbf: parseDbf, parseL: parseL, parseCsvPoints: parseCsvPoints, parseB90: parseB90, parseFieldFiles: parseFieldFiles,
     analyzeUpload: analyzeUpload, latestPoints: latestPoints, wanted: wanted, fmtDist: fmtDist,
     matchChecks: matchChecks, classifyChecks: classifyChecks, addSupplement: addSupplement,
+    localFit: localFit, planWriteBack: planWriteBack, parseDbfRaw: parseDbfRaw, appendDbf: appendDbf, planDbfWrite: planDbfWrite, buildDbfFiles: buildDbfFiles,
     parseGnssCsv: parseGnssCsv, parseNikonRaw: parseNikonRaw, tm2Scale: tm2Scale,
     parseParamInp: parseParamInp, parseCtlFix: parseCtlFix, sectionNums: sectionNums, sectionFromName: sectionFromName, sectionsFromPath: sectionsFromPath, pickParamFiles: pickParamFiles, GpsTransform: GpsTransform, checkParams: checkParams,
     parseParcelList: parseParcelList, parseD13: parseD13, buildRegistry: buildRegistry, parcelHistory: parcelHistory,
@@ -2804,7 +3232,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     return readJson('設定.json').catch(function () { return {}; }).then(function (c) {
       S.cfg = Object.assign({ tolerance_cm: 2.0, section_names: {}, twd67_sections: null, abolished_sections: Core.ABOLISHED.slice(),
         surveyors: [], case_types: ['保存登記', '鑑界', '分割'], dup_tol_cm: 2.0, ref_buffer_m: 50,
-        param_exclude: {}, param_choice: {}, param_exclude_names: [], check_tol_cm: 3.0, check_range_m: 150 }, c);
+        param_exclude: {}, param_choice: {}, param_exclude_names: [], check_tol_cm: 3.0, check_range_m: 150,
+        case_tol_cm: 6, case_warn_cm: 5, case_radius_m: 200 }, c);
       // 115.11.06 決定：HL129 不用、0360 用自己的 1140730（只套一次，之後管理頁可以改）
       if (!S.cfg.defaults_v2) {
         S.cfg.defaults_v2 = true;
@@ -2853,6 +3282,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         .then(function () { return writeJson(v + 'ctl_entries.json', r.ctlEntries); })
         .then(function () { return writeJson(v + 'parcels.json', r.parcelIndex); });
       Object.keys(r.sections).forEach(function (s) { p = p.then(function () { return writeJson(v + 'sections/' + s + '.json', r.sections[s]); }); });
+      Object.keys(r.coa || {}).forEach(function (s) { p = p.then(function () { return writeJson(v + 'coa/' + s + '.json', r.coa[s]); }); });
       return p.then(function () { return writeJson('底圖/目前.json', { version: ver, built: Date.now() }); })
         .then(function () { return cleanupVersions(ver); })
         .then(function () { S.version = null; return loadBase(); })
@@ -2990,6 +3420,146 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     }).then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true }; });
   }
   function stamp(d) { var p = function (n) { return (n < 10 ? '0' : '') + n; }; return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); }
+  // ── 外業包（97 CSV）：宗地界址點、附近圖根點、附近補點 ──
+  function readCoa(sec) {
+    return readJson(vpath('coa/' + sec + '.json')).catch(function () { throw new Error('底圖是舊版，請到 ⚙ 管理按一次「重新整理」再用'); });
+  }
+  function fieldKit(body) {
+    var pl = Core.parseParcelList(body.parcelsText), R = +body.radius || 200;
+    if (!pl.parcels.length) return Promise.reject(new Error('請填地號'));
+    return parcelsIndex().then(function (idx) {
+      var want = [];
+      pl.parcels.forEach(function (w) {
+        var hit = idx.filter(function (r) { return r[1] === w.key && (!w.section || r[0] === w.section); });
+        var secs = hit.map(function (r) { return r[0]; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+        if (!secs.length) throw new Error(w.key + ' 地號找不到');
+        if (secs.length > 1) throw new Error(w.key + ' 地號好幾段都有（' + secs.map(secName).join('、') + '），請寫成「段號 地號」，例如 ' + secs[0].slice(2) + ' ' + w.key);
+        want.push({ section: secs[0], key: w.key });
+      });
+      var secs = want.map(function (w) { return w.section; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+      return Promise.all(secs.map(function (sec) { return Promise.all([readJson(vpath('sections/' + sec + '.json')), readCoa(sec)]); })).then(function (arr) {
+        var rows = [], seen = {}, pts = [];
+        var add = function (name, y, x, kind) { var k = name.toUpperCase(); if (seen[k]) return; seen[k] = 1; rows.push({ name: name, y: y, x: x, kind: kind }); };
+        secs.forEach(function (sec, i) {
+          var parcels = arr[i][0].parcels, coa = arr[i][1];
+          want.filter(function (w) { return w.section === sec; }).forEach(function (w) {
+            var pc = parcels.filter(function (p) { return p.k === w.key; })[0];
+            if (!pc || !pc.n) throw new Error('底圖是舊版，請到 ⚙ 管理按一次「重新整理」再用');
+            pc.n.forEach(function (id) { var c = coa[id]; if (c) { pts.push([c[0], c[1]]); add(id, c[0], c[1], '界址點'); } });
+          });
+        });
+        var near = function (y, x) { return pts.some(function (q) { return Math.hypot(q[0] - y, q[1] - x) <= R; }); };
+        var head = [];
+        S.controls.forEach(function (c) { if (c.status === 'ok' && c.datum !== '?' && near(c.y, c.x)) head.push({ name: c.name, y: c.y, x: c.x, kind: '圖根點' }); });
+        return fieldData().then(function (fd) {
+          fd.points.filter(function (p) { return p.kind === '補點' && near(p.y, p.x); }).forEach(function (p) { head.push({ name: p.name, y: p.y, x: p.x, kind: '補點' }); });
+          var all = head.concat(rows), out = [], seen2 = {};
+          all.forEach(function (r) { var k = r.name.toUpperCase(); if (seen2[k]) return; seen2[k] = 1; out.push(r.name + ',' + r.y.toFixed(3) + ',' + r.x.toFixed(3) + ',0.000,'); });
+          var fn = '外業包_' + secs.map(function (x) { return x.slice(2); }).join('_') + '_' + want.map(function (w) { return w.key; }).slice(0, 5).join('_') + '.csv';
+          download(fn, out.join('\r\n') + '\r\n', 'text/csv');
+          var cnt = {}; all.forEach(function (r) { cnt[r.kind] = (cnt[r.kind] || 0) + 1; });
+          return { ok: true, file: fn, counts: cnt };
+        });
+      });
+    });
+  }
+
+  // ── 回寫重測系統：97 外業成果 → 這段坐標（67 段反算）→ 案件局部修正 → D14／D20 ──
+  var WB = {};   // 預覽時的狀態（寫入時要確認檔案沒被別人改過）
+  function readSysFolder(dir) {
+    var files = {}, it = dir.values();
+    function next() {
+      return it.next().then(function (r) {
+        if (r.done) return files;
+        var h = r.value, e = Core.extName(h.name);
+        if (h.kind === 'file' && (e === 'D14' || e === 'D20') && Core.baseName(h.name).toUpperCase() !== 'KC0000') {
+          return h.getFile().then(function (f) { return f.arrayBuffer(); }).then(function (b) { (files[e] = files[e] || []).push({ name: h.name, handle: h, bytes: new Uint8Array(b) }); return next(); });
+        }
+        return next();
+      });
+    }
+    return next();
+  }
+  function writeBackPreview(body) {
+    var sv = surveyorOf(body.surveyor);
+    if (!sv) return Promise.reject(new Error('請先選測量員'));
+    if (!body.dir) return Promise.reject(new Error('請先選重測系統的資料夾（裡面要有 KCxxxx.D14、D20）'));
+    return readSysFolder(body.dir).then(function (sys) {
+      var d14f = (sys.D14 || [])[0], d20f = (sys.D20 || [])[0];
+      if (!d14f && !d20f) throw new Error('這個資料夾裡找不到 D14 或 D20，請選某一段的資料夾（例如 KC0370）');
+      var sec = Core.sectionOf((d14f || d20f).name);
+      var info = (S.index.sections || []).filter(function (x) { return x.section === sec; })[0];
+      if (!info) throw new Error('底圖裡沒有 ' + sec);
+      var T = info.datum === 'TWD67' ? S.trans[sec] : null;
+      return Promise.all([Core.expandZips(body.items), readCoa(sec), loadBatches(true)]).then(function (a) {
+        var files = a[0], coa = a[1], all = a[2], meas = [], report = [];
+        files.forEach(function (f) {
+          var e = Core.extName(f.path), known = [], m = [];
+          if (e === 'RAW') { var r = Core.parseNikonRaw(Core.decode(f.bytes), { h: 50 }); known = r.known; m = r.shots; }
+          else if (e === 'CSV' || e === 'TXT') { var g = Core.parseGnssCsv(Core.decode(f.bytes)); known = g.known; m = g.measured; }
+          else return;
+          var fr = frameOf({ known: known, measured: m.filter(function (p) { return !/^\d+$/.test(p.name); }), section: sec }, {});
+          if (fr === 'unknown' && T) {   // 再用這段的界址點號比：對到 97 還是 67 坐標
+            var v7 = 0, v9 = 0;
+            known.concat(m).forEach(function (p) { var c = /^\d+$/.test(p.name) && coa[String(+p.name)]; if (!c) return; if (Math.hypot(c[0] - p.y, c[1] - p.x) < 1) v9++; if (Math.hypot(c[2] - p.y, c[3] - p.x) < 1) v7++; });
+            if (v7 > v9) fr = 'TWD67'; else if (v9) fr = 'TWD97';
+          }
+          if (fr === 'unknown' && T) report.push(['warn', Core.fileName(f.path) + '：看不出是 67 還是 97，先當作 97；如果是 67 坐標的檔案，結果會差 800 多公尺，請確認']);
+          if (fr === 'TWD67') { report.push(['error', Core.fileName(f.path) + ' 是 67 坐標的檔案；回寫要用 97 的外業成果']); return; }
+          m.forEach(function (p) { meas.push({ name: p.name, code: p.code, y: p.y, x: p.x, src: f.path }); });
+          report.push(['info', Core.fileName(f.path) + '：實測 ' + m.length + ' 點']);
+        });
+        if (!meas.length) throw new Error('沒有讀到 97 的實測點（衛星接收儀 CSV 或 Nikon RAW）');
+        var res = Core.planWriteBack({ section: sec, T: T, measured: meas, coa: coa, ctlByName: S.ctlByName,
+          d14: d14f ? Core.parseDbfRaw(d14f.bytes) : null, d20: d20f ? Core.parseDbfRaw(d20f.bytes) : null,
+          registry: Core.buildRegistry(all, sv.name, sv.code), svCode: sv.code, dupTol: (S.cfg.dup_tol_cm || 2) / 100,
+          tol: (S.cfg.case_tol_cm || 6) / 100, warn: (S.cfg.case_warn_cm || 5) / 100, radius: +body.radius || S.cfg.case_radius_m || 200 });
+        res.report = report.concat(res.report);
+        if (T) res.report.unshift(['info', secName(sec) + ' 是 67 段：97 成果用同一組參數反算回 67（' + T.describe() + '）']);
+        res.section = sec; res.datum = info.datum; res.files = { d14: d14f && d14f.name, d20: d20f && d20f.name };
+        WB = { sv: sv, sec: sec, res: res, d14f: d14f, d20f: d20f, items: body.items, dir: body.dir };
+        return { section: sec, datum: info.datum, report: res.report, checks: res.checks, fit: res.fit, frame: res.frame,
+          rows: res.plan.rows.map(function (r) { return { kind: r.kind, orig: r.orig_name, out: r.out, target: r.target, y: r.y, x: r.x, y97: r.y97, x97: r.x97, status: r.status, reason: r.reason, reg: r.reg }; }),
+          toD14: res.plan.toD14.length, toD20: res.plan.toD20.length, blocking: res.plan.blocking.length + res.report.filter(function (x) { return x[0] === 'error'; }).length };
+      });
+    });
+  }
+  function writeBackCommit(body) {
+    if (!WB.res) return Promise.reject(new Error('請先按「檢查」'));
+    var res = WB.res, built = Core.buildDbfFiles(res.plan, WB.d14f ? Core.parseDbfRaw(WB.d14f.bytes) : null, WB.d20f ? Core.parseDbfRaw(WB.d20f.bytes) : null);
+    var jobs = [];
+    if (built.d14) jobs.push({ f: WB.d14f, data: built.d14 });
+    if (built.d20) jobs.push({ f: WB.d20f, data: built.d20 });
+    if (!jobs.length) return Promise.reject(new Error('沒有要寫入的點'));
+    var st = stamp(new Date());
+    // 確認檔案沒被改過 → 原檔備份成 .bak → 寫入
+    return jobs.reduce(function (p, j) {
+      return p.then(function () { return j.f.handle.getFile(); }).then(function (f) { return f.arrayBuffer(); }).then(function (b) {
+        var cur = new Uint8Array(b);
+        if (cur.length !== j.f.bytes.length || cur.some(function (v, i) { return v !== j.f.bytes[i]; })) throw new Error(j.f.name + ' 在檢查之後被改過了，請重新按「檢查」');
+        return WB.dir.getFileHandle(j.f.name + '.' + st + '.bak', { create: true });
+      }).then(function (bh) { return bh.createWritable().then(function (w) { return w.write(j.f.bytes).then(function () { return w.close(); }); }); })
+        .then(function () { return j.f.handle.createWritable(); }).then(function (w) { return w.write(j.data).then(function () { return w.close(); }); });
+    }, Promise.resolve()).then(function () {
+      // 平台留紀錄：補點進清冊（97 坐標）、參考點、檢核結果、用的參數版本
+      var created = Date.now() / 1000, id = st + '_' + WB.sv.name.replace(/[\\/:*?"<>|]/g, '_') + '_回寫';
+      var written = res.plan.toD14.concat(res.plan.toD20);
+      var rec = { version: 2, writeback: true, surveyor: WB.sv.name, code: WB.sv.code, caseType: '回寫重測系統', caseNo: body.caseNo || '', note: body.note || '',
+        created: created, sections: [WB.sec], maxNum: res.maxNum, parcels: [], used: [], links: [],
+        points: written.map(function (r) { return { section: WB.sec, kind: r.kind, name: r.target === 'D20' ? r.out : r.out, y: r.y97, x: r.x97, sys: [r.y, r.x], src: r.src, reg: r.reg, orig_name: r.orig_name }; }),
+        stats: { '補點': res.plan.toD20.length, '新補點': res.plan.toD20.filter(function (r) { return r.reg === 'new'; }).length, '參考點': res.plan.toD14.length, '重測舊點': res.checks.length },
+        report: res.report, fit: res.fit, checks: [], wbChecks: res.checks.map(function (c) { return { name: c.name, kind: c.kind, before: c.before, after: c.after, used: c.used }; }),
+        paramVersion: S.version, transform: res.datum === 'TWD67' ? (S.index.sections.filter(function (x) { return x.section === WB.sec; })[0] || {}).transform : '', files: [] };
+      var p = writeJson('上傳/' + id + '/結果.json', rec);
+      p = p.then(function () { return write('上傳/' + id + '/寫入對照表.csv', built.table); });
+      (WB.items || []).forEach(function (f) { p = p.then(function () { return write('上傳/' + id + '/原始檔/' + f.path.split('/').filter(Boolean).join('/'), f.bytes); }); });
+      return p.then(function () {
+        rec.id = id; S.batches[id] = rec; var out = { ok: true, d14: built.d14 ? res.plan.toD14.length : 0, d20: built.d20 ? res.plan.toD20.length : 0, backup: st };
+        download('寫入對照表_' + WB.sec + '_' + st + '.csv', built.table, 'text/csv');
+        WB = {}; return out;
+      });
+    });
+  }
   function surveyorOf(name) { return (S.cfg.surveyors || []).filter(function (x) { return x.name === name; })[0]; }
   function registryOf(name) {
     var sv = surveyorOf(name);
@@ -3190,7 +3760,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
           dup_tol_cm: S.cfg.dup_tol_cm, ref_buffer_m: S.cfg.ref_buffer_m, section_names: S.names, custom_names: S.cfg.section_names,
           abolished: S.cfg.abolished_sections, sections: idx.sections, ctl: idx.ctl, built: idx.built,
           ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {},
-          param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3 };
+          param_exclude_names: S.cfg.param_exclude_names || [], check_tol_cm: S.cfg.check_tol_cm || 3,
+          case_tol_cm: S.cfg.case_tol_cm, case_warn_cm: S.cfg.case_warn_cm, case_radius_m: S.cfg.case_radius_m };
       });
     }
     if (path === '/api/controls') return Promise.resolve(S.controls);
@@ -3237,6 +3808,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
         if ('dup_tol_cm' in body) S.cfg.dup_tol_cm = body.dup_tol_cm;
         if ('ref_buffer_m' in body) S.cfg.ref_buffer_m = body.ref_buffer_m;
         if ('check_tol_cm' in body) S.cfg.check_tol_cm = body.check_tol_cm;
+        ['case_tol_cm', 'case_warn_cm', 'case_radius_m'].forEach(function (k) { if (k in body) S.cfg[k] = body[k]; });
         if (Array.isArray(body.param_exclude_names)) { S.cfg.param_exclude_names = body.param_exclude_names; rebuild = true; }
         if (body.param_choice) { S.cfg.param_choice = Object.assign(S.cfg.param_choice || {}, body.param_choice); Object.keys(S.cfg.param_choice).forEach(function (k) { if (!S.cfg.param_choice[k]) delete S.cfg.param_choice[k]; }); rebuild = true; }
         if (body.param_exclude) { S.cfg.param_exclude = Object.assign(S.cfg.param_exclude || {}, body.param_exclude); rebuild = true; }
@@ -3261,6 +3833,9 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
       return saveSource(body.items).then(function () { return rebuildFrom(body.items, body.progress); }).then(function (idx) { return { ok: true, sections: idx.sections.length }; });
     }
     if (path === '/api/base/rebuild') return rebuildFromSaved(body && body.progress).then(function () { return { ok: true }; });
+    if (path === '/api/kit') return loadCfg().then(function () { return fieldKit(body); });
+    if (path === '/api/writeback/preview') return loadCfg().then(function () { return writeBackPreview(body); });
+    if (path === '/api/writeback/commit') return writeBackCommit(body);
     if (path === '/api/checks/approve') return loadCfg().then(function () { return setApproved(body); });
     if (path === '/api/params/upload') return loadCfg().then(function () { return uploadParams(body); });
     if (path === '/api/params/delete') {
@@ -3295,7 +3870,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.07-2';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.07-3';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -3921,6 +4496,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     $('tol').value = i.tolerance_cm;
     $('caseTypes').value = (i.case_types || []).join('\n');
     $('dupTol').value = i.dup_tol_cm || 2;
+    $('caseTol').value = i.case_tol_cm || 6; $('caseWarn').value = i.case_warn_cm || 5;
     $('refBuf').value = i.ref_buffer_m || 50;
     renderSurveyors();
     renderParams();
@@ -4081,6 +4657,59 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
   $('parPickFile').onclick = function () { $('parFile').click(); };
   $('parDir').onchange = function () { paramUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.webkitRelativePath || f.name, file: f }; })); this.value = ''; };
   $('parFile').onchange = function () { paramUpload(Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; })); this.value = ''; };
+  // ── 外業工具 ──
+  $('kitGo').onclick = function () {
+    busy(true, '產生外業包…');
+    api('/api/kit', { parcelsText: $('kitParcels').value, radius: $('kitRadius').value }).then(function (r) {
+      busy(false); $('kitMsg').innerHTML = '已下載 <b>' + esc(r.file) + '</b>：' + Object.keys(r.counts).map(function (k) { return k + ' ' + r.counts[k] + ' 點'; }).join('、');
+    }).catch(function (e) { busy(false); toast(e.message, 8000); });
+  };
+  var wb = { dir: null, files: [] };
+  $('wbDir').onclick = function () {
+    window.showDirectoryPicker({ id: 'resurvey', mode: 'readwrite' }).then(function (d) { wb.dir = d; $('wbDirName').textContent = '📁 ' + d.name; }).catch(function () {});
+  };
+  $('wbPick').onclick = function () { $('wbInput').click(); };
+  $('wbInput').onchange = function () { wb.files = Array.prototype.map.call(this.files, function (f) { return { path: f.name, file: f }; }); this.value = ''; $('wbFiles').textContent = wb.files.map(function (x) { return x.path; }).join('、'); };
+  function fillWbWho() {
+    var sv = (S.info && S.info.surveyors) || [], cur = $('wbWho').value || store('who') || '';
+    $('wbWho').innerHTML = '<option value="">— 選測量員 —</option>' + sv.map(function (x) { return '<option value="' + esc(x.name) + '">' + esc(x.name) + '</option>'; }).join('');
+    if (sv.some(function (x) { return x.name === cur; })) $('wbWho').value = cur;
+  }
+  $('wbCheck').onclick = function () {
+    if (!$('wbWho').value) return toast('請選測量員');
+    if (!wb.dir) return toast('請選重測系統資料夾');
+    if (!wb.files.length) return toast('請選 97 外業成果檔');
+    busy(true, '檢查中…');
+    Local.fileListToItems(wb.files).then(function (items) { return api('/api/writeback/preview', { surveyor: $('wbWho').value, dir: wb.dir, items: items, radius: $('wbRadius').value }); })
+      .then(function (r) { busy(false); renderWb(r); }).catch(function (e) { busy(false); toast(e.message, 8000); });
+  };
+  function renderWb(r) {
+    var cm = function (v) { return v == null ? '' : (v * 100).toFixed(1) + ' cm'; }, tol = (S.info.case_tol_cm || 6) / 100, warn = (S.info.case_warn_cm || 5) / 100;
+    var order = { error: 0, warn: 1, ok: 2, info: 3 };
+    var h = '<div class="small">' + esc(secName(r.section)) + '（' + r.datum + '）：寫進 D14 參考點 <b>' + r.toD14 + '</b> 點、D20 補點 <b>' + r.toD20 + '</b> 點</div>';
+    h += r.report.slice().sort(function (a, b) { return order[a[0]] - order[b[0]]; }).map(function (m) { return '<div class="msg ' + m[0] + '">' + esc(m[1]) + '</div>'; }).join('');
+    if (r.checks.length) {
+      h += '<label>重測到的舊點（實測換回 ' + r.frame + ' 跟已知比）</label><div class="reg"><table class="wbt"><tr><th>點</th><th>種類</th><th>修正前</th><th>修正後</th><th>用來修正</th></tr>' + r.checks.map(function (c) {
+        var lv = function (v) { return v > tol ? 'bad' : v > warn ? 'warn' : 'okc'; };
+        return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.kind) + '</td><td class="' + lv(c.before) + '">' + cm(c.before) + '</td><td class="' + lv(c.after) + '">' + cm(c.after) + '</td><td>' + (c.used ? '✔' : (c.near ? '✘ 差太多' : '太遠')) + '</td></tr>';
+      }).join('') + '</table></div>';
+    }
+    var ST = { new: '新增', renumbered: '自動改號', edited: '手動指定', needCode: '缺編碼', conflict: '衝突', skip: '無法寫入', excluded: '不寫入', noFile: '缺檔案', near: '重測（不寫入）', remeasure: '重測→新參考點' };
+    h += '<label>要寫入的點</label><div class="reg"><table class="wbt"><tr><th>原名</th><th>寫成</th><th>檔</th><th>' + r.frame + ' 坐標</th><th>狀態</th></tr>' + r.rows.map(function (x) {
+      return '<tr><td>' + esc(x.orig) + '</td><td><b>' + esc(x.out || '') + '</b></td><td>' + esc(x.target || '') + '</td><td>' + f3(x.y) + ', ' + f3(x.x) + '</td><td title="' + esc(x.reason || '') + '">' + esc(ST[x.status] || x.status) + (x.reason ? ' ⓘ' : '') + '</td></tr>';
+    }).join('') + '</table></div>';
+    h += r.blocking ? '<div class="msg error">有 ' + r.blocking + ' 個問題要先處理（缺編碼、衝突或 67 坐標的檔案），還不能寫入</div>' :
+      '<div class="row"><button id="wbWrite" class="go">✍ 寫入重測系統（原檔先備份 .bak）</button></div>';
+    $('wbOut').innerHTML = h;
+    if ($('wbWrite')) $('wbWrite').onclick = function () {
+      if (!confirm('寫進 ' + r.section + ' 的 D14／D20？原檔會先備份。')) return;
+      busy(true, '寫入中…');
+      api('/api/writeback/commit', {}).then(function (x) {
+        busy(false); toast('已寫入：D14 ' + x.d14 + ' 點、D20 ' + x.d20 + ' 點（原檔備份 .' + x.backup + '.bak），寫入對照表已下載', 8000);
+        $('wbOut').innerHTML = ''; wb.files = []; $('wbFiles').textContent = ''; return loadField();
+      }).catch(function (e) { busy(false); toast(e.message, 8000); });
+    };
+  }
   function renderSurveyors() {
     var sv = (S.info && S.info.surveyors) || [];
     $('svList').innerHTML = sv.length ? sv.map(function (x, i) {
@@ -4143,7 +4772,8 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
     busy(true, '儲存中…');
     var cts = $('caseTypes').value.split(/\n/).map(function (x) { return x.trim(); }).filter(Boolean);
     api('/api/config', { tolerance_cm: parseFloat($('tol').value) || 2, section_names: names, case_types: cts.length ? cts : ['保存登記', '鑑界', '分割'],
-      dup_tol_cm: parseFloat($('dupTol').value) || 2, ref_buffer_m: parseFloat($('refBuf').value) || 50 })
+      dup_tol_cm: parseFloat($('dupTol').value) || 2, ref_buffer_m: parseFloat($('refBuf').value) || 50,
+      case_tol_cm: parseFloat($('caseTol').value) || 6, case_warn_cm: parseFloat($('caseWarn').value) || 5 })
       .then(function () { busy(false); toast('已儲存'); return loadInfo().then(renderAdmin); })
       .catch(function (e) { busy(false); toast(e.message); });
   };
@@ -4214,7 +4844,7 @@ window.DEFAULT_SECTION_NAMES = {"KC0300": "苑裡段北勢小段", "KC0306": "�
 
   // ───────────────────────── 載入 ─────────────────────────
   function loadInfo() {
-    return api('/api/info').then(function (i) { S.info = i; drawSectionBoxes(); fillUploadForm(); });
+    return api('/api/info').then(function (i) { S.info = i; drawSectionBoxes(); fillUploadForm(); fillWbWho(); });
   }
   function loadField() {
     return api('/api/field').then(function (d) {

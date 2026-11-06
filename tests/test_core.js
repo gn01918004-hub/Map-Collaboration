@@ -125,6 +125,21 @@ function dbf(fields, rows) {
   assert.ok(/1140819\/380\.inp$/.test(picks[0].path));
   assert.deepStrictEqual(picks[0].alternatives.map(a => a.added.concat(a.removed)), [['P4'], ['P3']].sort().reverse() && picks[0].alternatives.map(a => a.added.concat(a.removed)));
 
+  // 範圍資料夾、自己的資料夾優先、修正版資料夾
+  assert.deepStrictEqual(Core.sectionsFromPath('346-353/成果解算/1140701_2/349.inp'), ['KC0346', 'KC0347', 'KC0348', 'KC0349', 'KC0350', 'KC0351', 'KC0352', 'KC0353']);
+  assert.deepStrictEqual(Core.sectionsFromPath('370_375_376/375/計算成果/1140703_剔除HL129/375.inp'), ['KC0375']);
+  assert.deepStrictEqual(Core.sectionsFromPath('e7d3daa0-370_375_376/計算成果/1140717/37001.inp'), ['KC0370', 'KC0375', 'KC0376']);
+  const rv = Core.pickParamFiles([
+    { path: 'q/375/計算成果/1140703/375.inp', bytes: enc2.encode([0, 1, 2, 3, 4].map(k => line('P' + k, k)).join('\n')) },
+    { path: 'q/375/計算成果/1140703/375.out', bytes: enc2.encode('x') },
+    { path: 'q/375/計算成果/1140703_剔除P4/375.inp', bytes: enc2.encode([0, 1, 2, 3].map(k => line('P' + k, k)).join('\n')) },
+    { path: 'q/375/計算成果/1140703_剔除P4/375.out', bytes: enc2.encode('x') }]);
+  assert.ok(/剔除P4/.test(rv[0].path), '同一天的修正版優先');
+  assert.deepStrictEqual(Core.parseCtlFix('點名  改算前N 改算前E 改算後N 改算後E\nH395  2709655.123   216898.385   2709659.357   216899.038'),
+    [{ name: 'H395', on: 2709655.123, oe: 216898.385, nn: 2709659.357, ne: 216899.038 }]);
+  const far = Core.parseParamInp([0, 1, 2, 3, 4, 5].map(k => line('P' + k, k)).concat(['FAR  1  2694530.852  215008.487  2694736.314  214179.532']).join('\n'));
+  assert.deepStrictEqual(Core.checkParams(far).isolated.map(x => x.name), ['FAR']);
+
   // zip 讀寫來回
   const back = await Core.unzip(Core.zipStore([{ path: '中文/a.txt', text: '測試' }]));
   assert.strictEqual(back[0].path, '中文/a.txt');

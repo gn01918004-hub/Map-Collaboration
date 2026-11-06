@@ -163,8 +163,9 @@
       var found = Core.groupBaseFiles(files);
       if (!Object.keys(found).length) throw new Error('找不到 COA / BNP / PAR / CTL 檔（要選「數值」資料夾或它的 zip）');
       return loadCfg().then(function () {
-        return loadGps().then(function (gps) {
-          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gps: gps, gpsFile: S.gpsFile, progress: progress });
+        return loadGps().then(function (g) {
+          return Core.buildBase(found, { sec67: S.cfg.twd67_sections, abolished: S.cfg.abolished_sections, gpsSets: g.sets, ctlFix: g.fixes,
+            paramChoice: S.cfg.param_choice || {}, progress: progress });
         });
       });
     }).then(function (r) {
@@ -200,41 +201,47 @@
     });
     return p;
   }
-  /** 各段轉換參數檔：底圖/轉換參數/KC0367.inp → { KC0367: [點…] } */
+  /**
+   * 各段轉換參數：底圖/轉換參數/ 底下
+   *   KC0367.inp、KC0378_KC0379_KC0380.inp、KC0346_…_KC0353.inp（檔名就是給哪幾段用）
+   *   圖根改算_*.txt（原有圖根改算：點名 改算前N E 改算後N E）
+   * 設定.json 的 param_exclude {檔名: [不用的點]}、param_choice {段: 檔名}
+   */
   function loadGps() {
-    return dirOf('底圖/轉換參數').then(function (d) { return walk(d, '', function (p) { return /\.inp$/i.test(p); }); }, function () { return []; })
+    return dirOf('底圖/轉換參數').then(function (d) { return walk(d, '', function (p) { return /\.(inp|txt)$/i.test(p); }); }, function () { return []; })
       .then(function (files) {
-        var out = {}, file = {};
+        var sets = [], fixes = [], ex = (S.cfg && S.cfg.param_exclude) || {};
         files.forEach(function (f) {
-          var pts = Core.parseParamInp(Core.decode(f.bytes));
-          Core.sectionsFromPath(f.path).forEach(function (sec) { out[sec] = pts; file[sec] = f.path; });   // 同一份檔給好幾段 → 同一組點
+          if (/\.txt$/i.test(f.path)) { fixes = fixes.concat(Core.parseCtlFix(Core.decode(f.bytes))); return; }
+          var pts = Core.parseParamInp(Core.decode(f.bytes)), secs = Core.sectionsFromPath(f.path), drop = ex[f.path] || [];
+          pts.forEach(function (p) { if (drop.indexOf(p.name) >= 0) p.wt = 0; });
+          if (secs.length && pts.length) sets.push({ file: f.path, sections: secs, pts: pts });
         });
-        S.gpsFile = file;
-        return out;
+        return { sets: sets, fixes: fixes };
       });
   }
-  /** 上傳轉換參數（zip、資料夾或 .inp）：找出每段的 .inp，檢查後存起來，再重新整理底圖 */
+  /** 上傳轉換參數（zip、資料夾或 .inp）：每一組段挑正式計算成果存起來，原有圖根改算也存，再重新整理底圖 */
   function uploadParams(body) {
     return Core.expandZips(body.items).then(function (files) {
       var report = [], picks = Core.pickParamFiles(files);
-      if (!picks.length) throw new Error('沒找到 .inp 轉換參數檔（檔名或資料夾名要有段號，例如 367 或「378、379、380」；格式：點名 權 N97 E97 N67 E67）');
-      var p = dirOf('底圖/轉換參數', true).then(function (d) {
-        // 新的參數檔涵蓋到的段，舊的檔先拿掉
-        return walk(d, '', function (x) { return /\.inp$/i.test(x); }).then(function (old) {
-          var cover = {}; picks.forEach(function (g) { g.sections.forEach(function (s) { cover[s] = 1; }); });
-          return Promise.all(old.filter(function (f) { return Core.sectionsFromPath(f.path).some(function (s) { return cover[s]; }); })
-            .map(function (f) { return d.removeEntry(f.path).catch(function () {}); }));
-        });
-      });
+      var fixFiles = files.filter(function (f) { return /改算.*\.txt$/i.test(Core.fileName(f.path)); });
+      if (!picks.length && !fixFiles.length) throw new Error('沒找到 .inp 轉換參數檔（檔名或資料夾名要有段號，例如 367、「378、379、380」或「346-353」；格式：點名 權 N97 E97 N67 E67）');
+      var p = Promise.resolve();
       picks.forEach(function (g) {
-        var c = Core.checkParams(g.pts), label = g.sections.join('、');
-        report.push(['ok', label + '：用 ' + g.path.split('/').slice(-3).join('/') + '，' + c.n + ' 個共同點，標準誤差 ' + (c.sigma0 * 100).toFixed(1) + ' 公分' +
-          (c.suspects.length ? '，可疑點 ' + c.suspects.join('、') : '') + (c.edges.length ? '，外圍點 ' + c.edges.join('、') : '')]);
+        var c = Core.checkParams(g.pts), label = g.sections.map(function (s) { return s.slice(2); }).join('、');
+        report.push(['ok', label + '：用 ' + g.path.split('/').slice(-3).join('/') + '，' + c.n + ' 點，標準誤差 ' + (c.sigma0 * 100).toFixed(1) + ' 公分' +
+          (c.suspects.length ? '，可疑點 ' + c.suspects.join('、') : '') + (c.isolated.length ? '，離其他點很遠 ' + c.isolated.map(function (x) { return x.name; }).join('、') : '')]);
         g.alternatives.forEach(function (a) {
-          report.push(['info', '另外有 ' + a.path.split('/').slice(-3).join('/') + '（' + a.n + ' 點' + (a.added.length ? '，多了 ' + a.added.join('、') : '') +
-            (a.removed.length ? '，少了 ' + a.removed.join('、') : '') + '），沒有用：正式計算成果優先']);
+          report.push(['info', '　另有 ' + a.path.split('/').slice(-2).join('/') + '（' + a.n + ' 點' + (a.added.length ? '，多 ' + a.added.join('、') : '') + (a.removed.length ? '，少 ' + a.removed.length + ' 點' : '') + '）沒用']);
         });
         p = p.then(function () { return write('底圖/轉換參數/' + g.sections.join('_') + '.inp', g.text); });
+      });
+      fixFiles.forEach(function (f, i) {
+        var n = Core.parseCtlFix(Core.decode(f.bytes)).length;
+        if (!n) return;
+        report.push(['ok', '原有圖根改算 ' + n + ' 點（' + f.path.split('/').slice(-2).join('/') + '）']);
+        var tag = Core.baseName(body.items[0] ? body.items[0].path : 'x').replace(/[^\w\u4e00-\u9fff-]/g, '') + '_' + i;
+        p = p.then(function () { return write('底圖/轉換參數/圖根改算_' + tag + '.txt', Core.decode(f.bytes)); });
       });
       return p.then(function () { return rebuildFromSaved(body.progress); }).then(function () { return { ok: true, report: report }; });
     });
@@ -400,7 +407,8 @@
         }
         return { datum: idx.datum, tolerance_cm: S.cfg.tolerance_cm, surveyors: S.cfg.surveyors, case_types: S.cfg.case_types,
           dup_tol_cm: S.cfg.dup_tol_cm, ref_buffer_m: S.cfg.ref_buffer_m, section_names: S.names, custom_names: S.cfg.section_names,
-          abolished: S.cfg.abolished_sections, sections: idx.sections, ctl: idx.ctl, built: idx.built };
+          abolished: S.cfg.abolished_sections, sections: idx.sections, ctl: idx.ctl, built: idx.built,
+          ctlFixed: idx.ctlFixed || {}, param_exclude: S.cfg.param_exclude || {}, param_choice: S.cfg.param_choice || {} };
       });
     }
     if (path === '/api/controls') return Promise.resolve(S.controls);
@@ -446,6 +454,8 @@
         if (Array.isArray(body.case_types)) S.cfg.case_types = body.case_types;
         if ('dup_tol_cm' in body) S.cfg.dup_tol_cm = body.dup_tol_cm;
         if ('ref_buffer_m' in body) S.cfg.ref_buffer_m = body.ref_buffer_m;
+        if (body.param_choice) { S.cfg.param_choice = Object.assign(S.cfg.param_choice || {}, body.param_choice); Object.keys(S.cfg.param_choice).forEach(function (k) { if (!S.cfg.param_choice[k]) delete S.cfg.param_choice[k]; }); rebuild = true; }
+        if (body.param_exclude) { S.cfg.param_exclude = Object.assign(S.cfg.param_exclude || {}, body.param_exclude); rebuild = true; }
         if (body.section_names) {
           var c = {};
           Object.keys(body.section_names).forEach(function (k) { if (body.section_names[k] && DEFAULT_NAMES[k] !== body.section_names[k]) c[k] = body.section_names[k]; });

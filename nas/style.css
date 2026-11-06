@@ -165,3 +165,5 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 
 #parList .dt td:first-child, #parList .dt th { white-space: nowrap; }
 #parList .dt td { font-size: 13px; }
 #parList details .dt td { white-space: nowrap; }
+
+.ghost.tiny { font-size: 12px; padding: 1px 6px; }

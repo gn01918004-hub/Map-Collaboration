@@ -1,7 +1,7 @@
 /* 地籍共作平台（共用資料夾版）— 畫面。資料讀寫交給 store.js 的 Local.api（不用伺服器） */
 (function () {
   'use strict';
-  var APP_VERSION = '115.11.06-2';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
+  var APP_VERSION = '115.11.06-3';   // 改版時更新；直接覆蓋 HTML 檔就好，共用資料夾裡的資料不用動
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function f3(v) { return v == null ? '' : Number(v).toFixed(3); }
@@ -614,36 +614,65 @@
     });
   }
   $('issueType').onchange = drawIssues;
-  /** 各段 67→97 用什麼方法、準不準 */
+  /** 各段 67→97 用什麼方法、準不準；可以改用別份、不用某些點 */
   function renderParams() {
     var secs = ((S.info && S.info.sections) || []).filter(function (x) { return x.datum === 'TWD67'; });
     if (!secs.length) { $('parList').innerHTML = ''; return; }
-    var cm = function (v) { return v == null ? '' : (v * 100).toFixed(1); };
-    $('parList').innerHTML = '<table class="dt"><tr><th>段</th><th>方法</th><th>精度</th></tr>' + secs.map(function (x) {
+    var cm = function (v) { return v == null ? '-' : (v * 100).toFixed(1); };
+    var short = function (f) { return String(f || '').split('/').pop().replace(/\.inp$/i, '').split('_').map(function (x) { return x.replace(/^KC/, ''); }).join('、'); };
+    var fx = (S.info.ctlFixed && Object.keys(S.info.ctlFixed)) || [];
+    var h = fx.length ? '<div class="msg info">ℹ 已套用原有圖根改算：' + esc(fx.join('、')) + '</div>' : '';
+    h += '<table class="dt"><tr><th>段</th><th>方法</th><th>精度</th></tr>' + secs.map(function (x) {
       var g = x.gps, how, acc;
-      if (g) { how = '<b style="color:#13834a">轉換參數檔</b><br><span class="small">GPS 共同點 ' + g.n + ' 點' + (g.shared && g.shared.length ? '<br>跟 ' + g.shared.map(function (s) { return s.slice(2); }).join('、') + ' 共用' : '') + '</span>'; acc = '標準誤差 ' + cm(g.sigma0) + ' cm'; }
-      else if (/全區/.test(x.transform)) { how = '<span style="color:#d92d20">全區共同點</span><br><span class="small">旁邊沒有 97 段可比</span>'; acc = (x.transform.match(/RMS ([\d.]+)/) || [])[1] ? '約 ' + x.transform.match(/RMS ([\d.]+)/)[1] + ' cm' : ''; }
-      else { how = '鄰段界址點'; acc = (x.transform.match(/RMS ([\d.]+)/) || [])[1] ? '約 ' + x.transform.match(/RMS ([\d.]+)/)[1] + ' cm' : ''; }
+      if (g) { how = '<b style="color:#13834a">參數檔</b><br><span class="small">' + esc(short(g.file)) + '<br>' + g.n + ' 點</span>'; acc = 'σ ' + cm(g.sigma0) + ' cm'; }
+      else if (/全區/.test(x.transform)) { how = '<span style="color:#d92d20">全區共同點</span>'; acc = '約 ' + ((x.transform.match(/RMS ([\d.]+)/) || [])[1] || '?') + ' cm'; }
+      else { how = '鄰段界址點'; acc = '約 ' + ((x.transform.match(/RMS ([\d.]+)/) || [])[1] || '?') + ' cm'; }
       var det = '';
       if (g) {
-        det = '<details><summary class="small">檢查結果</summary><div class="small">' +
-          (g.suspects.length ? '<div class="msg warn">⚠ 可疑點：<b>' + esc(g.suspects.join('、')) + '</b>（自己的殘差比別人大很多，67 或 GPS 坐標可能有問題，建議複測）</div>' : '') +
-          (g.edges.length ? '<div class="msg info">ℹ 外圍點：' + esc(g.edges.join('、')) + '（拿掉它，旁邊會推不準；這點很重要，要保護好）</div>' : '') +
-          (g.far && g.far.over500 > 0.05 ? '<div class="msg info">ℹ 段內有 ' + Math.round(g.far.over500 * 100) + '% 的界址點離最近的共同點超過 500 公尺（最遠 ' + Math.round(g.far.max) + ' 公尺），那裡是外插，比較不準；可以在那附近多測幾點</div>' : '') +
-          '邊長檢核（兩點 97 距離 vs 67 距離）：' + ['&lt;1/5000', '1/5000～1/10000', '1/10000～1/15000', '1/15000～1/20000', '&gt;1/20000'].map(function (t, k) { return t + ' <b>' + g.classes[k] + '</b>'; }).join('、') +
-          '<br>最差的幾條：' + g.worst.map(function (w) { return esc(w.from + '→' + w.to) + ' 差 ' + cm(Math.abs(w.diff)) + ' cm（1/' + Math.round(w.ratio) + '）'; }).join('、') +
-          '<table class="dt"><tr><th>點</th><th>殘差</th><th>拿掉後推算差</th></tr>' + g.residuals.map(function (r) {
-            return '<tr><td>' + esc(r.name) + '</td><td>' + cm(r.d) + ' cm</td><td>' + cm(r.loo) + ' cm</td></tr>';
-          }).join('') + '</table><button class="ghost" data-pdel="' + esc(x.section) + '" data-pfile="' + esc(g.file || '') + '">刪除這個參數檔' + (g.shared && g.shared.length ? '（' + (g.shared.length + 1) + ' 段一起）' : '') + '</button></div></details>';
+        det = '<details><summary class="small">檢查' + (g.suspects.length || (g.isolated || []).length ? ' ⚠' : '') + '</summary><div class="small">';
+        if (g.candidates && g.candidates.length > 1) {
+          det += '<div class="msg info">這段有 ' + g.candidates.length + ' 份參數可以用，拿附近 300 公尺內的共同點來考（自己有的點先拿掉再推），平均差最小的自動選用：' +
+            g.candidates.map(function (c) {
+              return '<br>' + (c.chosen ? '★ ' : '　') + esc(short(c.file)) + '（' + c.n + ' 點' + (c.byArea ? '，範圍涵蓋這段' : '') + '）平均差 <b>' + cm(c.err) + ' cm</b>（' + c.checks + ' 點考）' +
+                (c.chosen ? (c.pinned ? '　手動指定 <button class="ghost tiny" data-pin="' + esc(x.section) + '" data-f="">改回自動</button>' : '') :
+                  ' <button class="ghost tiny" data-pin="' + esc(x.section) + '" data-f="' + esc(c.file) + '">改用這份</button>');
+            }).join('') + '</div>';
+        }
+        (g.isolated || []).forEach(function (p) { det += '<div class="msg warn">⚠ <b>' + esc(p.name) + '</b> 離其他共同點 ' + (p.dist / 1000).toFixed(1) + ' 公里，會把整組參數拉歪，建議不用（下面取消勾選）</div>'; });
+        if (g.suspects.length) det += '<div class="msg warn">⚠ 可疑點：<b>' + esc(g.suspects.join('、')) + '</b>（殘差比別人大很多，建議複測或不用）</div>';
+        if (g.edges.length) det += '<div class="msg info">ℹ 外圍點：' + esc(g.edges.join('、')) + '（拿掉它旁邊就推不準，要保護好）</div>';
+        if (g.far && g.far.over500 > 0.05) det += '<div class="msg info">ℹ 段內 ' + Math.round(g.far.over500 * 100) + '% 的界址點離共同點超過 500 公尺（最遠 ' + Math.round(g.far.max) + ' 公尺）</div>';
+        if (g.shared && g.shared.length) det += '<div>跟 ' + esc(g.shared.map(function (s) { return s.slice(2); }).join('、')) + ' 共用這份參數，改點會一起改</div>';
+        det += '邊長檢核：' + ['&lt;1/5000', '～1/10000', '～1/15000', '～1/20000', '&gt;1/20000'].map(function (t, k) { return t + ' <b>' + g.classes[k] + '</b>'; }).join('、') +
+          '<table class="dt"><tr><th>用</th><th>點</th><th>殘差</th><th>拿掉後推算差</th></tr>' + g.residuals.map(function (r) {
+            return '<tr><td><input type="checkbox" checked data-ex="' + esc(g.file) + '" data-n="' + esc(r.name) + '"></td><td>' + esc(r.name) + '</td><td>' + cm(r.d) + ' cm</td><td>' + cm(r.loo) + ' cm</td></tr>';
+          }).join('') + (g.excluded || []).map(function (n) {
+            return '<tr style="color:#98a2b3"><td><input type="checkbox" data-ex="' + esc(g.file) + '" data-n="' + esc(n) + '"></td><td>' + esc(n) + '</td><td colspan="2">（沒用）</td></tr>';
+          }).join('') + '</table><button class="ghost" data-pdel="' + esc(x.section) + '" data-pfile="' + esc(g.file) + '">刪除這份參數檔</button></div></details>';
       }
       return '<tr><td>' + esc(secName(x.section)) + '</td><td>' + how + '</td><td>' + acc + det + '</td></tr>';
     }).join('') + '</table>';
+    $('parList').innerHTML = h;
+    var rerun = function (body, msg) {
+      busy(true, msg); body.progress = progressTo('重新整理底圖');
+      api('/api/config', body).then(function () { busy(false); return restart(); }).then(function () { openPanel('admin'); }).catch(function (e) { busy(false); toast(e.message); });
+    };
+    Array.prototype.forEach.call($('parList').querySelectorAll('[data-pin]'), function (b) {
+      b.onclick = function () { var o = {}; o[b.getAttribute('data-pin')] = b.getAttribute('data-f'); rerun({ param_choice: o }, '換參數重新整理…'); };
+    });
+    Array.prototype.forEach.call($('parList').querySelectorAll('[data-ex]'), function (c) {
+      c.onchange = function () {
+        var file = c.getAttribute('data-ex'), cur = ((S.info.param_exclude || {})[file] || []).slice(), n = c.getAttribute('data-n');
+        cur = c.checked ? cur.filter(function (x) { return x !== n; }) : cur.concat([n]);
+        if (!confirm((c.checked ? '重新使用 ' : '不用 ') + n + '，重新計算這份參數？')) { c.checked = !c.checked; return; }
+        var o = {}; o[file] = cur; rerun({ param_exclude: o }, '重新計算參數…');
+      };
+    });
     Array.prototype.forEach.call($('parList').querySelectorAll('[data-pdel]'), function (b) {
       b.onclick = function () {
-        var sec = b.getAttribute('data-pdel');
-        if (!confirm('刪除 ' + sec + ' 的轉換參數檔，改回自動推算？')) return;
+        if (!confirm('刪除 ' + short(b.getAttribute('data-pfile')) + ' 這份參數檔？')) return;
         busy(true, '重新整理底圖中…');
-        api('/api/params/delete', { section: sec, file: b.getAttribute('data-pfile'), progress: progressTo('重新整理底圖') }).then(function () { busy(false); restart(); }).catch(function (e) { busy(false); toast(e.message); });
+        api('/api/params/delete', { section: b.getAttribute('data-pdel'), file: b.getAttribute('data-pfile'), progress: progressTo('重新整理底圖') }).then(function () { busy(false); restart(); }).catch(function (e) { busy(false); toast(e.message); });
       };
     });
   }
@@ -651,7 +680,7 @@
     if (!list.length) return;
     busy(true, '讀取轉換參數…');
     Local.fileListToItems(list).then(function (items) { return api('/api/params/upload', { items: items, progress: progressTo('用新的轉換參數重新整理底圖') }); })
-      .then(function (r) { busy(false); toast(r.report.map(function (x) { return x[1]; }).join('；'), 12000); restart().then(function () { openPanel('admin'); }); })
+      .then(function (r) { busy(false); toast(r.report.filter(function (x) { return x[0] === 'ok'; }).map(function (x) { return x[1]; }).join('；'), 15000); restart().then(function () { openPanel('admin'); }); })
       .catch(function (e) { busy(false); toast('失敗：' + e.message, 10000); });
   }
   $('parPickDir').onclick = function () { $('parDir').click(); };
